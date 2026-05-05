@@ -362,6 +362,13 @@ function parseRoute(request: Request): Route | null {
   return null;
 }
 
+
+type RequestContext = {
+  url: URL;
+  simulate?: "rateLimited" | "notFound";
+};
+
+
 export default {
 
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -369,6 +376,16 @@ export default {
     
     const url = new URL(request.url);
 
+    const ctx: RequestContext = {
+      url,
+      simulate:
+      isDev(env) && url.searchParams.get("simulate") === "rateLimited"
+	? "rateLimited"
+	: isDev(env) && url.searchParams.get("simulate") === "notFound"
+        ? "notFound"
+        : undefined,
+    };
+    
     // serve static assets first
     if (request.method === "GET" && url.pathname.startsWith("/static/")) {
       return env.ASSETS.fetch(request);
@@ -408,7 +425,7 @@ export default {
       return handleAt(agent,route);
       
     case "chat":
-      return handleChat(agent,route);
+      return handleChat(ctx,agent,route);
       
     case "reply":
       return json({ error: "Not implemented yet" }, 501);
@@ -459,21 +476,83 @@ async function handleAt(
 
 
 async function handleChat(
+  ctx: RequestContext,
   agent: AtpAgent,
   route: Extract<Route, { kind: "chat" }>,
 ): Promise<Response> {
-
+  // 1. First check arXiv.
   const metadata = await fetchMetadata(route.source, route.id);
+
+  if (ctx.simulate === "rateLimited") {
+    (metadata as any).rateLimited = true;
+  }
+
+  if (ctx.simulate === "notFound") {
+    (metadata as any).notFound = true;
+  }
+  
+  // 2. Then check anchor/post.
   const existingAnchor = await getAnchorRecord(agent, route.source, route.id);
 
   let anchor;
   let anchorPost;
 
-  if (
+  const hasUsableAnchorPost =
     existingAnchor.exists &&
     existingAnchor.record.discussion &&
-    await blueskyPostExists(agent, existingAnchor.record.discussion.uri)
-  ) {
+    await blueskyPostExists(agent, existingAnchor.record.discussion.uri);
+
+  // 3. arXiv rate limited, but existing PubChat page exists.
+  if ((metadata as any).rateLimited && hasUsableAnchorPost) {
+    anchor = existingAnchor;
+    anchorPost = anchorPostFromAnchor(agent, anchor);
+
+    const fallbackMetadata = await metadataFromBlueskyPost(
+      agent,
+      anchorPost.uri,
+      route.source,
+      route.id,
+    );
+
+    const thread = await fetchDiscussionThread(agent, anchorPost.uri);
+
+    const data = {
+      source: route.source,
+      sourceId: route.id,
+      anchor: {
+        uri: anchor.uri,
+        cid: anchor.cid,
+      },
+      anchorPost,
+      metadata: fallbackMetadata,
+      thread,
+      warning:
+        "arXiv is rate limiting requests. Paper metadata is being shown from the existing PubChat anchor post and may be truncated.",
+    };
+
+    if (route.format === "json") return json(data);
+    return html(renderChatPage(data));
+  }
+
+  // 4. arXiv failed and no usable anchor post exists.
+  if ((metadata as any).rateLimited) {
+    return html(renderUnavailablePage({
+      title: "arXiv is rate limiting requests",
+      message: "PubChat could not create or display this page because arXiv temporarily rejected the metadata request.",
+      arxivId: route.id,
+    }), 429);
+  }
+
+  if ((metadata as any).notFound) {
+    return html(renderUnavailablePage({
+      title: "arXiv paper not found",
+      message: "PubChat could not find this arXiv paper.",
+      arxivId: route.id,
+    }), 404);
+  }
+
+  // 5. Normal path.
+  if (hasUsableAnchorPost) {
     anchor = existingAnchor;
     anchorPost = anchorPostFromAnchor(agent, anchor);
   } else {
@@ -509,9 +588,9 @@ async function handleChat(
   };
 
   if (route.format === "json") return json(data);
-
   return html(renderChatPage(data));
 }
+
 
 
 async function fetchMetadata(source: Source, id: string) {
@@ -534,6 +613,35 @@ function getAllAuthors(entry: string): string[] {
   return authors;
 }
 
+async function metadataFromBlueskyPost(
+  agent: AtpAgent,
+  uri: string,
+  source: Source,
+  id: string,
+) {
+  const m = uri.match(/^at:\/\/([^/]+)\/([^/]+)\/([^/]+)$/);
+  if (!m) throw new Error("Bad Bluesky post URI");
+
+  const [, repo, collection, rkey] = m;
+
+  const res = await agent.com.atproto.repo.getRecord({
+    repo,
+    collection,
+    rkey,
+  });
+
+  const record = res.data.value as any;
+  const external = record.embed?.external;
+
+  return {
+    title: external?.title ?? "PubChat discussion",
+    abstract: external?.description ?? null,
+    link: `https://arxiv.org/abs/${id}`,
+    authors: [],
+    rateLimited: true,
+  };
+}
+
 async function fetchArxiv(id: string) {
   const res = await fetch(
     `https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`,
@@ -545,14 +653,40 @@ async function fetchArxiv(id: string) {
     },
   );
 
-  if (!res.ok) throw new Error(`arXiv returned ${res.status}`);
+  if (res.status === 429) {
+    return {
+      title: null,
+      abstract: null,
+      link: `https://arxiv.org/abs/${id}`,
+      authors: [],
+      rateLimited: true,
+    };
+  }
+
+  if (!res.ok) {
+    return {
+      title: null,
+      abstract: null,
+      link: `https://arxiv.org/abs/${id}`,
+      authors: [],
+      notFound: true,
+    };
+  }
+
 
   const text = await res.text();
 
   const entryMatch = text.match(/<entry>([\s\S]*?)<\/entry>/);
   if (!entryMatch) {
-    return { title: null, abstract: null, link: null };
+    return {
+    title: null,
+      abstract: null,
+      link: `https://arxiv.org/abs/${id}`,
+      authors: [],
+      notFound: true,
+    };
   }
+
 
   const entry = entryMatch[1];
 
@@ -576,6 +710,60 @@ async function fetchArxiv(id: string) {
   };
 }
 
+
+function renderUnavailablePage(args: {
+  title: string;
+  message: string;
+  arxivId: string;
+}): string {
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(args.title)} — PubChat</title>
+  <link rel="icon" href="/static/favicon.png" sizes="32x32" type="image/png">
+  <style>
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f3f7fb;
+      color: #0f1419;
+    }
+
+    main {
+      max-width: 680px;
+      margin: 40px auto;
+      padding: 20px;
+      background: white;
+      border: 1px solid #dbe3ec;
+      border-radius: 12px;
+    }
+
+    a {
+      color: #0a7cff;
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>${escapeHtml(args.title)}</h1>
+    <p>${escapeHtml(args.message)}</p>
+    <p>
+      arXiv:
+      <a href="https://arxiv.org/abs/${escapeAttr(args.arxivId)}" target="_blank" rel="noopener">
+        ${escapeHtml(args.arxivId)}
+      </a>
+    </p>
+  </main>
+</body>
+</html>`;
+}
 
 function renderPostText(text: string, facets: any[]): string {
   if (!facets || facets.length === 0) {
@@ -694,6 +882,7 @@ function renderChatPage(data: {
   anchorPost: { uri: string; cid: string; blueskyUrl: string };
   metadata: Awaited<ReturnType<typeof fetchMetadata>>;
   thread: DiscussionPost[];
+  warning?: string;
 }): string {
   const title = data.metadata.title ?? `${data.source}:${data.sourceId}`;
   const authors = data.metadata.authors ?? [];
@@ -761,6 +950,14 @@ function renderChatPage(data: {
     border-left: 1px solid #dbe3ec;
     border-right: 1px solid #dbe3ec;
   }
+
+.warning {
+  padding: 10px 12px;
+  border: 1px solid #f0c36d;
+  border-radius: 8px;
+  background: #fff8e5;
+  color: #5f4b00;
+}
 
   .paper {
     padding: 20px;
@@ -994,6 +1191,12 @@ function renderChatPage(data: {
   <span class="descriptor">Abstract:</span>
   ${renderArxivAbstract(data.metadata.abstract)}
 </blockquote>
+
+${
+  data.warning
+    ? `<p class="warning">${escapeHtml(data.warning)}</p>`
+    : ""
+}
 
     ${
       data.metadata.link
