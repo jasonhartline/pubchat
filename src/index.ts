@@ -596,7 +596,7 @@ async function handleChat(
 async function fetchMetadata(source: Source, id: string) {
   switch (source) {
     case "arxiv":
-      return fetchArxiv(id);
+      return fetchCachedArxiv(id);
   }
   throw new Error(`Unsupported source: ${source}`);
 }
@@ -709,6 +709,34 @@ async function fetchArxiv(id: string) {
     authors: getAllAuthors(entry),
   };
 }
+
+
+async function fetchCachedArxiv(id: string) {
+  const cache = caches.default;
+  const cacheKey = new Request(`https://pubchat.org/cache/arxiv/${id}`);
+
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    return cached.json();
+  }
+
+  const metadata = await fetchArxiv(id);
+
+  // Do not cache rate limits or transient failures.
+  if (!(metadata as any).rateLimited && !(metadata as any).notFound) {
+    const response = new Response(JSON.stringify(metadata), {
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "public, max-age=86400",
+      },
+    });
+
+    await cache.put(cacheKey, response);
+  }
+
+  return metadata;
+}
+
 
 
 function renderUnavailablePage(args: {
@@ -1166,7 +1194,7 @@ function renderChatPage(data: {
       ignoreHtmlClass: "post-text|post-meta|post-actions"
     },
     tex: {
-      inlineMath: [['$', '$'], ['\\(', '\\)']]
+      inlineMath: [['$', '$']]
     }
   };
 </script>
