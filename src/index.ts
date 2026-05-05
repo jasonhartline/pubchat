@@ -366,6 +366,7 @@ function parseRoute(request: Request): Route | null {
 type RequestContext = {
   url: URL;
   simulate?: "rateLimited" | "notFound";
+  debug?: boolean;
 };
 
 
@@ -384,6 +385,7 @@ export default {
 	: isDev(env) && url.searchParams.get("simulate") === "notFound"
         ? "notFound"
         : undefined,
+      debug: url.searchParams.has("debug"),
     };
     
     // serve static assets first
@@ -490,6 +492,7 @@ async function handleChat(
   if (ctx.simulate === "notFound") {
     (metadata as any).notFound = true;
   }
+
   
   // 2. Then check anchor/post.
   const existingAnchor = await getAnchorRecord(agent, route.source, route.id);
@@ -530,6 +533,9 @@ async function handleChat(
         "arXiv is rate limiting requests. Paper metadata is being shown from the existing PubChat anchor post and may be truncated.",
     };
 
+
+
+    
     if (route.format === "json") return json(data);
     return html(renderChatPage(data));
   }
@@ -587,6 +593,17 @@ async function handleChat(
     thread,
   };
 
+  if (ctx.debug) {
+    (data as any)._debug = {
+      cached: metadata.cached,
+      rateLimited: metadata.rateLimited,
+      notFound: metadata.notFound,
+      anchorExists: existingAnchor.exists,
+      hasDiscussion: !!existingAnchor.record?.discussion,
+    };
+  }
+
+  
   if (route.format === "json") return json(data);
   return html(renderChatPage(data));
 }
@@ -717,7 +734,8 @@ async function fetchCachedArxiv(id: string) {
 
   const cached = await cache.match(cacheKey);
   if (cached) {
-    return cached.json();
+    const data = await cached.json();
+    return { ...data, cached: true };
   }
 
   const metadata = await fetchArxiv(id);
@@ -734,7 +752,7 @@ async function fetchCachedArxiv(id: string) {
     await cache.put(cacheKey, response);
   }
 
-  return metadata;
+  return { ...metadata, cached: false };
 }
 
 
@@ -911,6 +929,7 @@ function renderChatPage(data: {
   metadata: Awaited<ReturnType<typeof fetchMetadata>>;
   thread: DiscussionPost[];
   warning?: string;
+  debug?: any;
 }): string {
   const title = data.metadata.title ?? `${data.source}:${data.sourceId}`;
   const authors = data.metadata.authors ?? [];
@@ -1145,6 +1164,17 @@ function renderChatPage(data: {
     border-radius: 8px;
   }
 
+.debug {
+  margin: 12px 0;
+  padding: 10px;
+  background: #fff8e5;
+  color: #5f4b00;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  font-size: 12px;
+  overflow-x: auto;
+}
+
   @media (max-width: 700px) {
     main {
       max-width: none;
@@ -1223,6 +1253,12 @@ function renderChatPage(data: {
 ${
   data.warning
     ? `<p class="warning">${escapeHtml(data.warning)}</p>`
+    : ""
+}
+
+${
+  data._debug
+    ? `<pre class="debug">${escapeHtml(JSON.stringify(data._debug, null, 2))}</pre>`
     : ""
 }
 
