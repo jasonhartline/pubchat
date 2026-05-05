@@ -561,9 +561,16 @@ async function fetchArxiv(id: string) {
     return m ? decodeXml(m[1].trim().replace(/\s+/g, " ")) : null;
   };
 
+  const getSummary = () => {
+  const m = entry.match(/<summary[^>]*>([\s\S]*?)<\/summary>/);
+  return m
+    ? decodeXml(m[1].trim().replace(/[ \t]+/g, " "))
+    : null;
+  };
+  
   return {
     title: get("title"),
-    abstract: get("summary"),
+    abstract: getSummary(),
     link: get("id"),
     authors: getAllAuthors(entry),
   };
@@ -619,6 +626,12 @@ function renderPostDate(createdAt: string): string {
     dateStyle: "medium",
     timeStyle: "short",
   });
+}
+
+function renderArxivAbstract(abstract: string | null | undefined): string {
+  return escapeHtml(abstract ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n+/g, "\n<br>");
 }
 
 function renderPostEmbed(embed: any): string {
@@ -764,6 +777,16 @@ function renderChatPage(data: {
     margin: 8px 0;
     line-height: 1.45;
   }
+
+.abstract {
+  margin: 8px 0;
+  line-height: 1.45;
+}
+
+.descriptor {
+  font-weight: 700;
+  margin-right: 4px;
+}
 
   .reply-box {
     padding: 14px 20px;
@@ -939,6 +962,19 @@ function renderChatPage(data: {
   }
 </style>
 
+<script>
+  window.MathJax = {
+    options: {
+      processHtmlClass: "mathjax",
+      ignoreHtmlClass: "post-text|post-meta|post-actions"
+    },
+    tex: {
+      inlineMath: [['$', '$'], ['\\(', '\\)']]
+    }
+  };
+</script>
+
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
 
 </head>
 <body>
@@ -954,9 +990,10 @@ function renderChatPage(data: {
 
 
 
-<p>
-<strong>Abstract:</strong>
-${escapeHtml(data.metadata.abstract ?? "")}</p>
+<blockquote class="abstract mathjax">
+  <span class="descriptor">Abstract:</span>
+  ${renderArxivAbstract(data.metadata.abstract)}
+</blockquote>
 
     ${
       data.metadata.link
