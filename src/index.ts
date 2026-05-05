@@ -700,6 +700,8 @@ function renderChatPage(data: {
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
 
   <title>${escapeHtml(title)} — PubChat</title>
 
@@ -720,17 +722,25 @@ function renderChatPage(data: {
   <meta name="twitter:image" content="${escapeAttr(image)}">
 
 
-
-
 <style>
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  background: #f3f7fb;
-  color: #0f1419;
-}
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    overflow-x: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f3f7fb;
+    color: #0f1419;
+  }
 
   main {
+    width: 100%;
     max-width: 680px;
     margin: 0 auto;
     background: white;
@@ -739,18 +749,44 @@ body {
     border-right: 1px solid #dbe3ec;
   }
 
-.paper {
-  padding: 20px;
-  border-bottom: 1px solid #dbe3ec;
-}
+  .paper {
+    padding: 20px;
+    border-bottom: 1px solid #dbe3ec;
+  }
 
-.paper h1 {
-  margin: 0 0 8px 0;
-}
+  .paper h1 {
+    margin: 0 0 8px 0;
+    font-size: 28px;
+    line-height: 1.2;
+  }
 
-.paper p {
-  margin: 8px 0;
-}
+  .paper p {
+    margin: 8px 0;
+    line-height: 1.45;
+  }
+
+  .reply-box {
+    padding: 14px 20px;
+    border-bottom: 1px solid #dbe3ec;
+  }
+
+  .reply-box a {
+    color: #0a7cff;
+    text-decoration: none;
+    font-size: 14px;
+  }
+
+  .reply-box a:hover {
+    text-decoration: underline;
+  }
+
+  .section-header {
+    padding: 16px 20px;
+    margin: 0;
+    border-bottom: 1px solid #dbe3ec;
+    font-size: 20px;
+    font-weight: 600;
+  }
 
   .post {
     border-bottom: 1px solid #dbe3ec;
@@ -760,7 +796,7 @@ body {
     display: flex;
     gap: 12px;
     position: relative;
-    align-items: stretch;   /* CRITICAL */
+    align-items: stretch;
   }
 
   .thread-margin {
@@ -769,41 +805,45 @@ body {
     flex-shrink: 0;
   }
 
-.avatar-wrap {
-  position: absolute;
-  top: 0;
-  transform: translateX(-50%);
-  z-index: 1;                 /* above line */
-}
+  .avatar-wrap {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    z-index: 1;
+  }
 
-.avatar,
-.avatar-placeholder {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: white;          /* CRITICAL: hides the line */
-}
+  .avatar,
+  .avatar-placeholder {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: white;
+  }
 
-  /* ---- THE IMPORTANT PART ---- */
+  .avatar {
+    object-fit: cover;
+    display: block;
+  }
 
-.branch-svg {
-  position: absolute;
-  top: 8px;
-  height: calc(100% - 16px);
-  overflow: visible;
-  pointer-events: none;
-  z-index: 0;
-}
+  .branch-svg {
+    position: absolute;
+    top: 8px;
+    height: calc(100% - 16px);
+    overflow: visible;
+    pointer-events: none;
+    z-index: 0;
+  }
 
-.post-body {
-  flex: 1;
-  min-width: 0;
-  padding: 12px 0;
-}
+  .post-body {
+    flex: 1;
+    min-width: 0;
+    padding: 12px 0;
+  }
 
   .post-meta {
     color: #536471;
     font-size: 14px;
+    line-height: 1.35;
   }
 
   .post-author {
@@ -811,11 +851,21 @@ body {
     color: #0f1419;
   }
 
+  .post-meta a {
+    color: #536471;
+    text-decoration: none;
+  }
+
+  .post-meta a:hover {
+    text-decoration: underline;
+  }
 
   .post-text {
     white-space: pre-wrap;
+    font-size: 15px;
     line-height: 1.45;
     margin: 6px 0 8px 0;
+    overflow-wrap: anywhere;
   }
 
   .post-actions a {
@@ -833,11 +883,59 @@ body {
     border-radius: 12px;
     padding: 10px;
     margin-top: 8px;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .embed img,
+  .post img,
+  svg {
+    max-width: 100%;
   }
 
   .embed img {
-    max-width: 100%;
     border-radius: 8px;
+  }
+
+  @media (max-width: 700px) {
+    main {
+      max-width: none;
+      min-height: 100vh;
+      border-left: 0;
+      border-right: 0;
+    }
+
+    .paper {
+      padding: 16px;
+    }
+
+    .paper h1 {
+      font-size: 23px;
+      line-height: 1.2;
+    }
+
+    .reply-box,
+    .section-header {
+      padding-left: 14px;
+      padding-right: 14px;
+    }
+
+    .post-row {
+      gap: 10px;
+    }
+
+    .thread-margin {
+      width: 72px;
+    }
+
+    .post-meta {
+      font-size: 13px;
+    }
+
+    .post-text {
+      font-size: 15px;
+      line-height: 1.4;
+    }
   }
 </style>
 
