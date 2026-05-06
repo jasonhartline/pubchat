@@ -920,6 +920,25 @@ function threadLineWidth(level: number): number {
   return (marginX(level + 1) - marginX(level)) * marginWidth;
 }
 
+function blueskyReplyLink(url: string, text = "Reply on Bluesky"): string {
+  return `
+    <a class="reply-link" href="${escapeAttr(url)}" target="_blank" rel="noopener">
+      <svg
+        class="bluesky-icon"
+        viewBox="0 0 600 530"
+        aria-hidden="true"
+      >
+        <path
+          fill="currentColor"
+          d="m123.121 34.664c66.479 49.918 137.996 151.11 176.879 231.527 38.883-80.417 110.4-181.609 176.879-231.527 47.96-36.017 125.621-63.868 125.621 24.771 0 17.694-10.152 148.639-16.111 169.899-20.711 73.891-96.192 92.736-163.337 81.306 117.366 19.981 147.228 86.153 82.746 152.325-122.428 125.652-175.922-31.533-189.632-71.804-2.513-7.381-3.689-10.834-4.166-7.896-.477-2.938-1.653.515-4.166 7.896-13.71 40.271-67.204 197.456-189.632 71.804-64.482-66.172-34.62-132.344 82.746-152.325-67.145 11.43-142.626-7.415-163.337-81.306-5.959-21.26-16.111-152.205-16.111-169.899 0-88.639 77.661-60.788 125.621-24.771z"
+        />
+      </svg>
+
+      <span>${escapeHtml(text)}</span>
+    </a>
+  `;
+}
+
 
 function renderChatPage(data: {
   source: Source;
@@ -1034,7 +1053,7 @@ function renderChatPage(data: {
 
   .reply-box {
     padding: 14px 20px;
-    border-bottom: 1px solid #dbe3ec;
+
   }
 
   .reply-box a {
@@ -1175,6 +1194,24 @@ function renderChatPage(data: {
   overflow-x: auto;
 }
 
+.reply-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #0a7cff;
+  text-decoration: none;
+}
+
+.reply-link:hover {
+  text-decoration: underline;
+}
+
+.bluesky-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
   @media (max-width: 700px) {
     main {
       max-width: none;
@@ -1191,6 +1228,8 @@ function renderChatPage(data: {
       font-size: 23px;
       line-height: 1.2;
     }
+
+
 
     .reply-box,
     .section-header {
@@ -1268,13 +1307,8 @@ ${
         : ""
     }
 
-<div class="reply-box">
-  <a href="${escapeAttr(data.anchorPost.blueskyUrl)}"
-     target="_blank"
-     rel="noopener">
-    Start a new discussion on Bluesky
-  </a>
-</div>
+      ${blueskyReplyLink(data.anchorPost.blueskyUrl,"Start a new discussion on Bluesky")}
+
 
 
 </section>
@@ -1288,7 +1322,7 @@ ${
 
 ${
   data.thread.filter(post => !post.isRoot).length === 0
-    ? `<p style="padding: 20px;">No comments yet.</p>`
+    ? blueskyReplyLink(data.anchorPost.blueskyUrl,"Start a new discussion on Bluesky")
     : data.thread.filter(post => !post.isRoot).map(post => `
   <article class="post">
   <div class="post-row">
@@ -1353,13 +1387,7 @@ ${
 
       ${renderPostEmbed(post.embed)}
 
-      <div class="post-actions">
-        <a href="${escapeAttr(post.blueskyUrl)}"
-           target="_blank"
-           rel="noopener">
-          Reply on Bluesky
-        </a>
-      </div>
+      ${blueskyReplyLink(post.blueskyUrl)}
     </div>
 
   </div>
