@@ -1322,7 +1322,7 @@ ${
 
 ${
   data.thread.filter(post => !post.isRoot).length === 0
-    ? blueskyReplyLink(data.anchorPost.blueskyUrl,"Start a new discussion on Bluesky")
+    ? '<div class="reply-box">' + blueskyReplyLink(data.anchorPost.blueskyUrl,"Start a new discussion on Bluesky") + '</div>'
     : data.thread.filter(post => !post.isRoot).map(post => `
   <article class="post">
   <div class="post-row">
