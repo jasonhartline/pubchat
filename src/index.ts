@@ -620,14 +620,15 @@ async function fetchMetadata(source: Source, id: string) {
 
 
 function getAllAuthors(entry: string): string[] {
-  const authors: string[] = [];
-  const re = /<author>\s*<name>([\s\S]*?)<\/name>\s*<\/author>/g;
-
-  let m;
-  while ((m = re.exec(entry)) !== null) {
-    authors.push(decodeXml(m[1].trim()));
-  }
-  return authors;
+  return [...entry.matchAll(/<author[^>]*>([\s\S]*?)<\/author>/g)]
+    .map(m => {
+      const block = m[1];
+      const name = block.match(/<name[^>]*>([\s\S]*?)<\/name>/);
+      return name
+        ? decodeXml(name[1].trim().replace(/\s+/g, " "))
+        : null;
+    })
+    .filter((x): x is string => x !== null);
 }
 
 async function metadataFromBlueskyPost(
