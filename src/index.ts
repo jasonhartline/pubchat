@@ -59,9 +59,10 @@ function parseArxivId(raw: string): SourceId | null {
 
   return {
     source: "arxiv",
-    id: m[1], // canonical: no version
+    id: m[1].replace(/v\d+$/, ""),
   };
 }
+
 
 
 type DiscussionPost = {
@@ -369,10 +370,39 @@ type RequestContext = {
   debug?: boolean;
 };
 
+function canonicalRedirect(request: Request): Response | null {
+  if (request.method !== "GET") return null;
+
+  const url = new URL(request.url);
+
+  const m = url.pathname.match(
+    new RegExp(`^/(chat|at)/arxiv/(${ARXIV_ID_PATH})(\\.json)?$`)
+  );
+
+  if (!m) return null;
+
+  const [, kind, rawId, jsonSuffix] = m;
+  const canonicalId = rawId.replace(/v\d+$/, "");
+
+  if (canonicalId === rawId) return null;
+
+  url.pathname = `/${kind}/arxiv/${canonicalId}${jsonSuffix ?? ""}`;
+
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: url.toString(),
+    },
+  });
+}
 
 export default {
 
   async fetch(request: Request, env: Env): Promise<Response> {
+
+    const redirect = canonicalRedirect(request);
+    if (redirect) return redirect;
+    
     const agent = await getAgent(env);
     
     const url = new URL(request.url);
