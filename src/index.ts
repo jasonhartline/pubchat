@@ -1008,15 +1008,23 @@ function renderChatPage(data: {
     color: #0f1419;
   }
 
-  main {
-    width: 100%;
-    max-width: 680px;
-    margin: 0 auto;
-    background: white;
-    min-height: 100vh;
-    border-left: 1px solid #dbe3ec;
-    border-right: 1px solid #dbe3ec;
-  }
+
+main {
+  width: 100%;
+  max-width: 680px;
+  margin: 0 auto;
+  background: white;
+  min-height: 100vh;
+  border-left: 1px solid #dbe3ec;
+  border-right: 1px solid #dbe3ec;
+
+  display: flex;
+  flex-direction: column;
+}
+
+.discussion {
+  flex: 1;
+}
 
 .warning {
   padding: 10px 12px;
@@ -1213,6 +1221,34 @@ function renderChatPage(data: {
   flex-shrink: 0;
 }
 
+.site-header {
+  border-bottom: 1px solid #dbe3ec;
+  padding: 10px 20px;
+}
+
+.site-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #0f1419;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.site-brand img {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.site-footer {
+  border-top: 1px solid #dbe3ec;
+  padding: 14px 20px;
+  font-size: 13px;
+  color: #536471;
+}
+
   @media (max-width: 700px) {
     main {
       max-width: none;
@@ -1274,6 +1310,12 @@ function renderChatPage(data: {
 </head>
 <body>
 <main>
+<header class="site-header">
+  <a href="/" class="site-brand">
+    <img src="/static/favicon.png" alt="">
+    <span>PubChat</span>
+  </a>
+</header>
   <section class="paper">
     <h1>${escapeHtml(title)}</h1>
 
@@ -1315,6 +1357,7 @@ ${
 </section>
 
 
+<section class=discussion>
 
 <h2 style="padding: 16px 20px; margin: 0; border-bottom: 1px solid #dbe3ec;">
   Bluesky Discussion
@@ -1395,7 +1438,10 @@ ${
     </article>
           `).join("")
 }
-
+</section>
+<footer class="site-footer">
+  PubChat attaches Bluesky discussions to academic papers. Reply on Bluesky to join the discussion.
+</footer>
   </main>
 </body>
 </html>`;
