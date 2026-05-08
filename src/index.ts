@@ -10,8 +10,9 @@ export interface Env {
 
 const ANCHOR_COLLECTION = "org.pubchat.anchor";
 const POST_COLLECTION = "app.bsky.feed.post";
-
-const POST_TEMPLATE = "“{{title}}”\nby {{authors}}\n\nCC: PubChat";
+const METADATA_CACHE_VERSION = 2;
+const POST_TEMPLATE =
+      "“{{title}}” ({{year}})\nby {{authors}}\n\nCC: PubChat";
 
 function fillTemplate(template: string, data: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_, key) => data[key] ?? "");
@@ -79,6 +80,33 @@ type DiscussionPost = {
   isRoot: boolean;
   avatar: string | undefined;
   hasReplies: boolean;
+};
+
+type MetadataProvider =
+  | "openalex"
+  | "arxiv"
+  | "crossref";
+
+type PaperMetadata = {
+  title: string | null;
+  abstract: string | null;
+  authors: string[];
+  year: number;
+
+  source: Source;
+  sourceId: string;
+
+  homeUrl: string;
+  pdfUrl?: string;
+
+  doi?: string;
+  openalexId?: string;
+
+  metadataProvider: MetadataProvider;
+
+  cached?: boolean;
+  rateLimited?: boolean;
+  notFound?: boolean;
 };
 
 
@@ -242,6 +270,7 @@ async function createBlueskyAnchorPost(
     $type: POST_COLLECTION,
     text: fillTemplate(POST_TEMPLATE, {
       title,
+      year: String(metadata.year),
       authors: (metadata.authors ?? []).join(", "),
     }),
     createdAt: new Date().toISOString(),
@@ -402,10 +431,17 @@ export default {
 
     const redirect = canonicalRedirect(request);
     if (redirect) return redirect;
+
+    const url = new URL(request.url);
+
+    // serve static assets first
+    if (request.method === "GET" && url.pathname.startsWith("/static/")) {
+      return env.ASSETS.fetch(request);
+    }
     
     const agent = await getAgent(env);
     
-    const url = new URL(request.url);
+
 
     const ctx: RequestContext = {
       url,
@@ -418,10 +454,6 @@ export default {
       debug: url.searchParams.has("debug"),
     };
     
-    // serve static assets first
-    if (request.method === "GET" && url.pathname.startsWith("/static/")) {
-      return env.ASSETS.fetch(request);
-    }
     
     if (isDev(env)) {
       // debug: list anchors
@@ -638,16 +670,62 @@ async function handleChat(
   return html(renderChatPage(data));
 }
 
+async function fetchMetadata(
+  source: Source,
+  id: string,
+): Promise<PaperMetadata> {
+  const cache = caches.default;
 
 
-async function fetchMetadata(source: Source, id: string) {
+  const cacheKey = new Request(
+    `https://pubchat.org/cache/v${METADATA_CACHE_VERSION}/metadata/${source}/${id}`,
+  );
+
+
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    const data = await cached.json<PaperMetadata>();
+    return { ...data, cached: true };
+  }
+
+  const metadata = await resolveMetadata(source, id);
+
+  if (!metadata.rateLimited && !metadata.notFound) {
+    await cache.put(
+      cacheKey,
+      new Response(JSON.stringify(metadata), {
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "public, max-age=86400",
+        },
+      }),
+    );
+  }
+
+  return { ...metadata, cached: false };
+}
+
+async function resolveMetadata(
+  source: Source,
+  id: string,
+): Promise<PaperMetadata> {
   switch (source) {
     case "arxiv":
-      return fetchCachedArxiv(id);
+      return resolveArxivMetadata(id);
   }
+
   throw new Error(`Unsupported source: ${source}`);
 }
 
+async function resolveArxivMetadata(
+  id: string,
+): Promise<PaperMetadata> {
+  try {
+    return await fetchOpenAlexForArxiv(id);
+  } catch {
+    return await fetchArxiv(id);
+  }
+}
 
 function getAllAuthors(entry: string): string[] {
   return [...entry.matchAll(/<author[^>]*>([\s\S]*?)<\/author>/g)]
@@ -666,7 +744,7 @@ async function metadataFromBlueskyPost(
   uri: string,
   source: Source,
   id: string,
-) {
+): Promise<PaperMetadata> {
   const m = uri.match(/^at:\/\/([^/]+)\/([^/]+)\/([^/]+)$/);
   if (!m) throw new Error("Bad Bluesky post URI");
 
@@ -681,16 +759,59 @@ async function metadataFromBlueskyPost(
   const record = res.data.value as any;
   const external = record.embed?.external;
 
+
+  const text = record.text ?? "";
+
+  const titleMatch = text.match(/“([^”]+)”/);
+  const yearMatch = text.match(/\((\d{4})\)/);
+  const authorsMatch = text.match(/\nby (.+?)(?:\n|$)/);
+
+  const title =
+	titleMatch?.[1]?.trim() ??
+	external?.title ??
+	"PubChat discussion";
+
+  const year = yearMatch
+	? Number(yearMatch[1])
+	: 0;
+
+  const authors = authorsMatch
+	? authorsMatch[1]
+	.split(",")
+	.map((x: string) => x.trim())
+	.filter(Boolean)
+	: ["Unknown authors"];
+
   return {
-    title: external?.title ?? "PubChat discussion",
+    title,
     abstract: external?.description ?? null,
-    link: `https://arxiv.org/abs/${id}`,
-    authors: [],
+    authors,
+    year,
+
+    source,
+    sourceId: id,
+
+    homeUrl:
+    source === "arxiv"
+      ? `https://arxiv.org/abs/${id}`
+      : external?.uri ?? `https://pubchat.org/chat/${source}/${id}`,
+
+    pdfUrl:
+      source === "arxiv"
+      ? `https://arxiv.org/pdf/${id}.pdf`
+      : undefined,
+
+    metadataProvider: "arxiv",
     rateLimited: true,
   };
 }
 
-async function fetchArxiv(id: string) {
+async function fetchArxiv(
+  id: string,
+): Promise<PaperMetadata> {
+  const homeUrl = `https://arxiv.org/abs/${id}`;
+  const pdfUrl = `https://arxiv.org/pdf/${id}.pdf`;
+
   const res = await fetch(
     `https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`,
     {
@@ -705,8 +826,12 @@ async function fetchArxiv(id: string) {
     return {
       title: null,
       abstract: null,
-      link: `https://arxiv.org/abs/${id}`,
       authors: [],
+      source: "arxiv",
+      sourceId: id,
+      homeUrl,
+      pdfUrl,
+      metadataProvider: "arxiv",
       rateLimited: true,
     };
   }
@@ -715,26 +840,32 @@ async function fetchArxiv(id: string) {
     return {
       title: null,
       abstract: null,
-      link: `https://arxiv.org/abs/${id}`,
       authors: [],
+      source: "arxiv",
+      sourceId: id,
+      homeUrl,
+      pdfUrl,
+      metadataProvider: "arxiv",
       notFound: true,
     };
   }
-
 
   const text = await res.text();
 
   const entryMatch = text.match(/<entry>([\s\S]*?)<\/entry>/);
   if (!entryMatch) {
     return {
-    title: null,
+      title: null,
       abstract: null,
-      link: `https://arxiv.org/abs/${id}`,
       authors: [],
+      source: "arxiv",
+      sourceId: id,
+      homeUrl,
+      pdfUrl,
+      metadataProvider: "arxiv",
       notFound: true,
     };
   }
-
 
   const entry = entryMatch[1];
 
@@ -744,49 +875,134 @@ async function fetchArxiv(id: string) {
   };
 
   const getSummary = () => {
-  const m = entry.match(/<summary[^>]*>([\s\S]*?)<\/summary>/);
-  return m
-    ? decodeXml(m[1].trim().replace(/[ \t]+/g, " "))
-    : null;
+    const m = entry.match(/<summary[^>]*>([\s\S]*?)<\/summary>/);
+    return m
+      ? decodeXml(m[1].trim().replace(/[ \t]+/g, " "))
+      : null;
   };
+
+  const published = get("published");
+
+  if (!published) {
+    throw new Error("arXiv entry missing published date");
+  }
   
+  const year = Number(published.slice(0, 4));
+  
+  if (!Number.isFinite(year)) {
+    throw new Error("Invalid arXiv publication year");
+  }
+  
+  const authors = getAllAuthors(entry);
+  
+  if (authors.length === 0) {
+    throw new Error("arXiv entry missing authors");
+  }
+  
+
   return {
     title: get("title"),
     abstract: getSummary(),
-    link: get("id"),
-    authors: getAllAuthors(entry),
+    authors,
+    year,
+    
+    source: "arxiv",
+    sourceId: id,
+
+    homeUrl,
+    pdfUrl,
+    
+    metadataProvider: "arxiv",
   };
 }
 
+async function fetchOpenAlexForArxiv(
+  id: string,
+): Promise<PaperMetadata> {
+  const url =
+    `https://api.openalex.org/works?filter=locations.landing_page_url.search:arxiv.org/abs/${encodeURIComponent(id)}`;
 
-async function fetchCachedArxiv(id: string) {
-  const cache = caches.default;
-  const cacheKey = new Request(`https://pubchat.org/cache/arxiv/${id}`);
+  const res = await fetch(url, {
+    headers: {
+      "user-agent": "PubChat/0.1",
+    },
+  });
 
-  const cached = await cache.match(cacheKey);
-  if (cached) {
-    const data = await cached.json();
-    return { ...data, cached: true };
+  if (!res.ok) {
+    throw new Error(`OpenAlex request failed: ${res.status}`);
   }
 
-  const metadata = await fetchArxiv(id);
+  const data = await res.json<any>();
+  const work = data.results?.[0];
 
-  // Do not cache rate limits or transient failures.
-  if (!(metadata as any).rateLimited && !(metadata as any).notFound) {
-    const response = new Response(JSON.stringify(metadata), {
-      headers: {
-        "content-type": "application/json; charset=utf-8",
-        "cache-control": "public, max-age=86400",
-      },
-    });
-
-    await cache.put(cacheKey, response);
+  if (!work) {
+    throw new Error("OpenAlex work not found");
   }
 
-  return { ...metadata, cached: false };
+  return normalizeOpenAlexWork(work, "arxiv", id);
 }
 
+function reconstructOpenAlexAbstract(
+  inverted?: Record<string, number[]>,
+): string | null {
+  if (!inverted) return null;
 
+  const words: string[] = [];
+
+  for (const [word, positions] of Object.entries(inverted)) {
+    for (const pos of positions) {
+      words[pos] = word;
+    }
+  }
+
+  return words.join(" ");
+}
+
+function normalizeOpenAlexWork(
+  work: any,
+  source: Source,
+  sourceId: string,
+): PaperMetadata {
+  const year = work.publication_year;
+  
+  if (!Number.isFinite(year)) {
+    throw new Error("OpenAlex work missing publication year");
+  }
+  
+  const authors =
+	work.authorships
+  ?.map((a: any) => a.author?.display_name)
+    .filter(Boolean) ?? [];
+  
+  if (authors.length === 0) {
+    throw new Error("OpenAlex work missing authors");
+  }
+
+  return {
+    title: work.title ?? null,
+    abstract: reconstructOpenAlexAbstract(work.abstract_inverted_index),
+    authors,
+    year,
+
+    source,
+    sourceId,
+
+    homeUrl:
+    source === "arxiv"
+      ? `https://arxiv.org/abs/${sourceId}`
+      : work.primary_location?.landing_page_url ?? work.id,
+
+    pdfUrl:
+      source === "arxiv"
+      ? `https://arxiv.org/pdf/${sourceId}.pdf`
+      : work.primary_location?.pdf_url ?? undefined,
+
+    doi: work.doi?.replace(/^https:\/\/doi.org\//, ""),
+    openalexId: work.id,
+
+    metadataProvider: "openalex",
+  };
+}
 
 function renderUnavailablePage(args: {
   title: string;
@@ -971,6 +1187,8 @@ function blueskyReplyLink(url: string, text = "Reply on Bluesky"): string {
 }
 
 
+
+
 function renderChatPage(data: {
   source: Source;
   sourceId: string;
@@ -984,6 +1202,10 @@ function renderChatPage(data: {
   const title = data.metadata.title ?? `${data.source}:${data.sourceId}`;
   const authors = data.metadata.authors ?? [];
 
+  const displayTitle =
+	data.metadata.year
+	? `${title} (${data.metadata.year})`
+	: title;
 
   const url = `https://pubchat.org/chat/${data.source}/${data.sourceId}`;
 
@@ -1002,21 +1224,21 @@ function renderChatPage(data: {
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
 
-  <title>${escapeHtml(title)} — PubChat</title>
+  <title>${escapeHtml(displayTitle)} — PubChat</title>
 
   <!-- favicon -->
   <link rel="icon" href="/static/favicon.png" sizes="32x32" type="image/png">
 
   <!-- Open Graph -->
   <meta property="og:type" content="article">
-  <meta property="og:title" content="${escapeAttr(title)}">
+  <meta property="og:title" content="${escapeAttr(displayTitle)}">
   <meta property="og:description" content="${escapeAttr(description)}">
   <meta property="og:url" content="${escapeAttr(url)}">
   <meta property="og:image" content="${escapeAttr(image)}">
 
   <!-- Twitter -->
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="${escapeAttr(title)}">
+  <meta name="twitter:title" content="${escapeAttr(displayTitle)}">
   <meta name="twitter:description" content="${escapeAttr(description)}">
   <meta name="twitter:image" content="${escapeAttr(image)}">
 
@@ -1347,13 +1569,12 @@ main {
   </a>
 </header>
   <section class="paper">
-    <h1>${escapeHtml(title)}</h1>
+    <h1>${escapeHtml(displayTitle)}</h1>
 
-    ${
-      authors.length > 0
-        ? `<p>${authors.map(escapeHtml).join(", ")}</p>`
-        : ""
-    }
+<p>
+  ${authors.map(escapeHtml).join(", ")}
+</p>
+
 
 
 
@@ -1374,11 +1595,11 @@ ${
     : ""
 }
 
-    ${
-      data.metadata.link
-        ? `<p><a href="${escapeAttr(data.metadata.link)}"><tt>${escapeHtml(data.metadata.link)}</tt></a></p>`
-        : ""
-    }
+${
+  data.metadata.homeUrl
+    ? `<p><a href="${escapeAttr(data.metadata.homeUrl)}"><tt>${escapeHtml(data.metadata.homeUrl)}</tt></a></p>`
+    : ""
+}
 
       ${blueskyReplyLink(data.anchorPost.blueskyUrl,"Start a new discussion on Bluesky")}
 
