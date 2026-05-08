@@ -78,11 +78,15 @@ type DiscussionPost = {
   blueskyUrl: string;
   depth: number;
   isRoot: boolean;
+
   avatar: string | undefined;
   hasReplies: boolean;
 };
 
+
 type MetadataProvider =
+  | "semanticscholar"
+  | "datacite"
   | "openalex"
   | "arxiv"
   | "crossref";
@@ -662,6 +666,7 @@ async function handleChat(
       notFound: metadata.notFound,
       anchorExists: existingAnchor.exists,
       hasDiscussion: !!existingAnchor.record?.discussion,
+      metadataProvider: metadata.metadataProvider,
     };
   }
 
@@ -717,14 +722,151 @@ async function resolveMetadata(
   throw new Error(`Unsupported source: ${source}`);
 }
 
+
+
 async function resolveArxivMetadata(
   id: string,
 ): Promise<PaperMetadata> {
   try {
-    return await fetchOpenAlexForArxiv(id);
-  } catch {
+    return await fetchDataciteForArxiv(id);
+  } catch (err) {
+    console.log("DataCite failed; falling back to arXiv", err);
     return await fetchArxiv(id);
   }
+}
+
+function arxivDoi(id: string): string {
+  return `10.48550/arXiv.${id}`;
+}
+
+async function fetchDataciteForArxiv(
+  id: string,
+): Promise<PaperMetadata> {
+  const doi = arxivDoi(id);
+  const homeUrl = `https://arxiv.org/abs/${id}`;
+  const pdfUrl = `https://arxiv.org/pdf/${id}.pdf`;
+
+  const res = await fetch(
+    `https://api.datacite.org/dois/${encodeURIComponent(doi)}`,
+    {
+      headers: {
+        "user-agent": "PubChat/0.1",
+        accept: "application/vnd.api+json",
+      },
+    },
+  );
+
+  if (!res.ok) {
+    throw new Error(`DataCite request failed: ${res.status}`);
+  }
+
+  const data = await res.json<any>();
+  const a = data.data?.attributes;
+
+  if (!a) {
+    throw new Error("DataCite response missing attributes");
+  }
+
+  const title = a.titles?.[0]?.title;
+  if (!title) {
+    throw new Error("DataCite metadata missing title");
+  }
+
+  const year = a.publicationYear;
+  if (!Number.isFinite(year)) {
+    throw new Error("DataCite metadata missing publication year");
+  }
+
+  const authors =
+    a.creators
+      ?.map((c: any) => {
+        if (c.givenName || c.familyName) {
+          return [c.givenName, c.familyName].filter(Boolean).join(" ");
+        }
+        return c.name;
+      })
+      .filter(Boolean) ?? [];
+
+  if (authors.length === 0) {
+    throw new Error("DataCite metadata missing authors");
+  }
+
+  const abstract =
+    a.descriptions
+      ?.find((d: any) => d.descriptionType === "Abstract")
+      ?.description ?? null;
+
+  return {
+    title,
+    abstract,
+    authors,
+    year,
+
+    source: "arxiv",
+    sourceId: id,
+
+    homeUrl,
+    pdfUrl,
+
+    doi: a.doi ?? doi,
+    metadataProvider: "datacite",
+  };
+}
+
+async function fetchSemanticScholarForArxiv(
+  id: string,
+): Promise<PaperMetadata> {
+  const homeUrl = `https://arxiv.org/abs/${id}`;
+  const pdfUrl = `https://arxiv.org/pdf/${id}.pdf`;
+
+  const url =
+    `https://api.semanticscholar.org/graph/v1/paper/arXiv:${encodeURIComponent(id)}` +
+    `?fields=title,abstract,year,authors,externalIds,url`;
+
+  const res = await fetch(url, {
+    headers: {
+      "user-agent": "PubChat/0.1",
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Semantic Scholar request failed: ${res.status}`);
+  }
+
+  const paper = await res.json<any>();
+
+  const title = paper.title;
+  if (!title) throw new Error("Semantic Scholar paper missing title");
+
+  const year = paper.year;
+  if (!Number.isFinite(year)) {
+    throw new Error("Semantic Scholar paper missing year");
+  }
+
+  const authors =
+    paper.authors
+      ?.map((a: any) => a.name)
+      .filter(Boolean) ?? [];
+
+  if (authors.length === 0) {
+    throw new Error("Semantic Scholar paper missing authors");
+  }
+
+  return {
+    title,
+    abstract: paper.abstract ?? null,
+    authors,
+    year,
+
+    source: "arxiv",
+    sourceId: id,
+
+    homeUrl,
+    pdfUrl,
+
+    doi: paper.externalIds?.DOI,
+    metadataProvider: "semanticscholar",
+  };
 }
 
 function getAllAuthors(entry: string): string[] {
@@ -919,8 +1061,10 @@ async function fetchArxiv(
 async function fetchOpenAlexForArxiv(
   id: string,
 ): Promise<PaperMetadata> {
+  const arxivAbsUrl = `https://arxiv.org/abs/${id}`;
+
   const url =
-    `https://api.openalex.org/works?filter=locations.landing_page_url.search:arxiv.org/abs/${encodeURIComponent(id)}`;
+    `https://api.openalex.org/works?search=${encodeURIComponent(arxivAbsUrl)}&per-page=5`;
 
   const res = await fetch(url, {
     headers: {
@@ -933,10 +1077,17 @@ async function fetchOpenAlexForArxiv(
   }
 
   const data = await res.json<any>();
-  const work = data.results?.[0];
+
+  const work = data.results?.find((w: any) =>
+    (w.locations ?? []).some((loc: any) =>
+      loc.landing_page_url === arxivAbsUrl ||
+      loc.landing_page_url === `${arxivAbsUrl}v1` ||
+      loc.landing_page_url?.startsWith(`${arxivAbsUrl}v`)
+    )
+  );
 
   if (!work) {
-    throw new Error("OpenAlex work not found");
+    throw new Error("OpenAlex work not found for arXiv ID");
   }
 
   return normalizeOpenAlexWork(work, "arxiv", id);
