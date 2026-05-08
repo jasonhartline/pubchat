@@ -6,6 +6,7 @@ export interface Env {
   ATP_APP_PASSWORD: string;
   ASSETS: Fetcher;
   ENVIRONMENT: string; // "dev" or undefined
+  API_CONTACT_EMAIL?: string;
 }
 
 const ANCHOR_COLLECTION = "org.pubchat.anchor";
@@ -26,6 +27,13 @@ function extractRkeyFromUri(uri: string): string {
   return uri.split("/").pop()!;
 }
 
+function pubchatUserAgent(env: Env): string {
+  const contact = env.API_CONTACT_EMAIL
+    ? `; mailto:${env.API_CONTACT_EMAIL}`
+    : "";
+
+  return `PubChat/0.1 (https://pubchat.org${contact})`;
+}
 
 type Source = "arxiv";
 
@@ -493,7 +501,7 @@ export default {
       return handleAt(agent,route);
       
     case "chat":
-      return handleChat(ctx,agent,route);
+      return handleChat(env,ctx,agent,route);
       
     case "reply":
       return json({ error: "Not implemented yet" }, 501);
@@ -544,12 +552,13 @@ async function handleAt(
 
 
 async function handleChat(
+  env: Env,
   ctx: RequestContext,
   agent: AtpAgent,
   route: Extract<Route, { kind: "chat" }>,
 ): Promise<Response> {
   // 1. First check arXiv.
-  const metadata = await fetchMetadata(route.source, route.id);
+  const metadata = await fetchMetadata(env,route.source, route.id);
 
   if (ctx.simulate === "rateLimited") {
     (metadata as any).rateLimited = true;
@@ -676,6 +685,7 @@ async function handleChat(
 }
 
 async function fetchMetadata(
+  env: Env,
   source: Source,
   id: string,
 ): Promise<PaperMetadata> {
@@ -693,7 +703,7 @@ async function fetchMetadata(
     return { ...data, cached: true };
   }
 
-  const metadata = await resolveMetadata(source, id);
+  const metadata = await resolveMetadata(env,source, id);
 
   if (!metadata.rateLimited && !metadata.notFound) {
     await cache.put(
@@ -711,12 +721,13 @@ async function fetchMetadata(
 }
 
 async function resolveMetadata(
+  env: Env,
   source: Source,
   id: string,
 ): Promise<PaperMetadata> {
   switch (source) {
     case "arxiv":
-      return resolveArxivMetadata(id);
+    return resolveArxivMetadata(env,id);
   }
 
   throw new Error(`Unsupported source: ${source}`);
@@ -725,10 +736,11 @@ async function resolveMetadata(
 
 
 async function resolveArxivMetadata(
+  env: Env,
   id: string,
 ): Promise<PaperMetadata> {
   try {
-    return await fetchDataciteForArxiv(id);
+    return await fetchDataciteForArxiv(env,id);
   } catch (err) {
     console.log("DataCite failed; falling back to arXiv", err);
     return await fetchArxiv(id);
@@ -740,6 +752,7 @@ function arxivDoi(id: string): string {
 }
 
 async function fetchDataciteForArxiv(
+  env: Env,
   id: string,
 ): Promise<PaperMetadata> {
   const doi = arxivDoi(id);
@@ -750,8 +763,8 @@ async function fetchDataciteForArxiv(
     `https://api.datacite.org/dois/${encodeURIComponent(doi)}`,
     {
       headers: {
-        "user-agent": "PubChat/0.1",
-        accept: "application/vnd.api+json",
+	"user-agent": pubchatUserAgent(env),
+	accept: "application/vnd.api+json",
       },
     },
   );
