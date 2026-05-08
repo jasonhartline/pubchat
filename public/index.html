@@ -8,162 +8,163 @@
 
   <meta name="description" content="PubChat attaches Bluesky discussion to academic papers.">
 
-<meta property="og:type" content="website">
-<meta property="og:title" content="PubChat">
-<meta property="og:description" content="Attach Bluesky discussion to academic papers.">
-<meta property="og:url" content="https://pubchat.org/">
-<meta property="og:image" content="https://pubchat.org/static/pubchat-card.png">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="PubChat">
+  <meta property="og:description" content="Attach Bluesky discussion to academic papers.">
+  <meta property="og:url" content="https://pubchat.org/">
+  <meta property="og:image" content="https://pubchat.org/static/pubchat-card.png">
 
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="PubChat">
-<meta name="twitter:description" content="Attach Bluesky discussion to academic papers.">
-<meta name="twitter:image" content="https://pubchat.org/static/pubchat-card.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="PubChat">
+  <meta name="twitter:description" content="Attach Bluesky discussion to academic papers.">
+  <meta name="twitter:image" content="https://pubchat.org/static/pubchat-card.png">
 
-<style>
-  * {
-    box-sizing: border-box;
-  }
+  <style>
 
-  html {
-    -webkit-text-size-adjust: 100%;
-  }
+    :root {
+     --accent: #8b6fe8;
+     --accent-soft: rgba(139, 111, 232, 0.18);
+    }
+    
+    * {
+      box-sizing: border-box;
+    }
 
-  body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: white;
-    color: #0f1419;
-  }
+    html {
+      -webkit-text-size-adjust: 100%;
+    }
 
-  main {
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
-  }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: white;
+      color: #0f1419;
+    }
 
-  .container {
-    width: 100%;
-    max-width: 640px;
-    text-align: center;
-  }
-
-  /* ---------- Title ---------- */
-
-  .title {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    margin-bottom: 32px;
-
-    font-size: 48px;
-    font-weight: 500;
-    letter-spacing: -0.5px;
-  }
-
-  .title img {
-    width: 40px;
-    height: 40px;
-    object-fit: contain;
-  }
-
-  /* ---------- Form ---------- */
-
-  form {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    justify-content: center;
-  }
-
-  input {
-    flex: 1;
-    font-size: 17px;
-    padding: 14px 18px;
-    border: 1px solid #d0d7de;
-    border-radius: 24px;
-    outline: none;
-    transition: all 0.15s ease;
-  }
-
-  input:focus {
-    border-color: #0a7cff;
-    box-shadow: 0 0 0 3px rgba(10, 124, 255, 0.12);
-  }
-
-  button {
-    font-size: 15px;
-    padding: 10px 18px;
-    border: 1px solid #d0d7de;
-    border-radius: 20px;
-    background: #f6f8fa;
-    cursor: pointer;
-    transition: background 0.15s ease;
-    white-space: nowrap;
-  }
-
-  button:hover {
-    background: #eef2f6;
-  }
-
-  .hint {
-    margin-top: 18px;
-    color: #536471;
-    font-size: 14px;
-  }
-
-  /* ---------- Mobile ---------- */
-
-  @media (max-width: 600px) {
     main {
-      padding: 16px;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 720px;
+      text-align: center;
     }
 
     .title {
-      font-size: 32px;
-      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 36px;
+
+      font-size: 56px;
+      font-weight: 500;
+      letter-spacing: -0.8px;
     }
 
     .title img {
-      width: 28px;
-      height: 28px;
+      width: 48px;
+      height: 48px;
+      object-fit: contain;
     }
 
     form {
+      display: flex;
       flex-direction: column;
-      gap: 12px;
+      align-items: center;
+      gap: 14px;
     }
 
     input {
       width: 100%;
-      font-size: 16px;
-      padding: 12px 16px;
+      font-size: 17px;
+      padding: 14px 18px;
+      border: 1px solid #d0d7de;
+      border-radius: 24px;
+      outline: none;
+      transition: all 0.15s ease;
     }
 
-    button {
-      width: 100%;
-      padding: 12px;
-      font-size: 16px;
+    input:focus {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 3px var(--accent-soft);
     }
 
-    .hint {
-      font-size: 13px;
+    .button-row {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
     }
-  }
-</style>
+
+    .button-row button,
+    .button-row a {
+      font-size: 15px;
+      padding: 10px 18px;
+      border: 0px solid #d0d7de;
+      border-radius: 10px;
+      background: #f6f8fa;
+      cursor: pointer;
+      transition: background 0.15s ease;
+      white-space: nowrap;
+      text-decoration: none;
+      color: #0f1419;
+      line-height: 1.2;
+    }
+
+    .button-row button:hover,
+    .button-row a:hover {
+	border-color: var(--accent);
+    }
+
+    @media (max-width: 600px) {
+      main {
+        padding: 16px;
+      }
+
+      .title {
+        font-size: 40px;
+        margin-bottom: 28px;
+      }
+
+      .title img {
+        width: 36px;
+        height: 36px;
+      }
+
+      input {
+        width: 100%;
+        font-size: 16px;
+        padding: 12px 16px;
+      }
+
+      .button-row {
+        width: 100%;
+        flex-direction: column;
+      }
+
+      .button-row button,
+      .button-row a {
+        width: 100%;
+        padding: 12px;
+        font-size: 16px;
+        text-align: center;
+      }
+    }
+  </style>
 </head>
 
 <body>
   <main>
     <div class="container">
       <div class="title">
-  <img src="/static/favicon.png" alt="PubChat logo">
-  <span>PubChat</span>
+        <img src="/static/favicon.png" alt="PubChat logo">
+        <span>PubChat</span>
       </div>
-
-
 
       <form id="pubchat-form">
         <input
@@ -173,9 +174,12 @@
           autocomplete="off"
           autofocus
         >
-        <button type="submit">Open</button>
-      </form>
 
+        <div class="button-row">
+          <button type="submit">Open</button>
+          <a href="/static/guide.html">Help</a>
+        </div>
+      </form>
     </div>
   </main>
 
@@ -183,10 +187,10 @@
     function parseArxivInput(raw) {
       const s = raw.trim();
 
-      const urlMatch = s.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})(?:v\d+)?/i);
+      const urlMatch = s.match(/arxiv\\.org\\/(?:abs|pdf)\\/(\\d{4}\\.\\d{4,5})(?:v\\d+)?/i);
       if (urlMatch) return urlMatch[1];
 
-      const idMatch = s.match(/^(\d{4}\.\d{4,5})(?:v\d+)?$/);
+      const idMatch = s.match(/^(\\d{4}\\.\\d{4,5})(?:v\\d+)?$/);
       if (idMatch) return idMatch[1];
 
       return null;

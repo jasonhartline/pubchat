@@ -1408,6 +1408,12 @@ function renderChatPage(data: {
 
 
 <style>
+
+  :root {
+    --accent: #8b6fe8;
+    --accent-soft: rgba(139, 111, 232, 0.18);
+  }
+
   * {
     box-sizing: border-box;
   }
@@ -1427,7 +1433,7 @@ function renderChatPage(data: {
 
 main {
   width: 100%;
-  max-width: 680px;
+  max-width: 684px;
   margin: 0 auto;
   background: white;
   min-height: 100vh;
@@ -1482,7 +1488,7 @@ main {
   }
 
   .reply-box a {
-    color: #0a7cff;
+    color: var(--accent);
     text-decoration: none;
     font-size: 14px;
   }
@@ -1580,7 +1586,7 @@ main {
   }
 
   .post-actions a {
-    color: #0a7cff;
+    color: var(--accent);
     text-decoration: none;
     font-size: 14px;
   }
@@ -1623,7 +1629,7 @@ main {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: #0a7cff;
+  color: var(--accent);
   text-decoration: none;
 }
 
@@ -1855,7 +1861,7 @@ ${
 }
 </section>
 <footer class="site-footer">
-  PubChat attaches Bluesky discussions to academic papers. Reply on Bluesky to join the discussion.
+  PubChat attaches Bluesky discussions to academic papers. Reply on Bluesky to join the discussion.  <a href=/static/guide.html>[help]</a>
 </footer>
   </main>
 </body>
