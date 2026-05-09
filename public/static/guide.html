@@ -141,6 +141,12 @@
       text-decoration: underline;
     }
 
+    pre,
+code,
+.example-post {
+  overflow-wrap: anywhere;
+}
+
     code,
     pre {
 	background: #faf8ff;
@@ -176,24 +182,56 @@
     }
 
     @media (max-width: 760px) {
-      main {
-        max-width: none;
-        border-left: 0;
-        border-right: 0;
-      }
+  main {
+    max-width: none;
+    border-left: 0;
+    border-right: 0;
+  }
 
-      .hero {
-        padding: 28px 18px 24px;
-      }
+  .site-header {
+    padding: 10px 16px;
+  }
 
-      .hero h1 {
-        font-size: 30px;
-      }
+  .hero {
+    padding: 26px 18px 22px;
+  }
 
-      .content {
-        padding: 20px 18px;
-      }
+  .hero h1 {
+    font-size: 30px;
+    line-height: 1.15;
+  }
+
+  .hero p {
+    font-size: 16px;
+  }
+
+  .content {
+    padding: 18px;
+  }
+
+  section {
+    padding-bottom: 20px;
+  }
+
+  h2 {
+    font-size: 21px;
+  }
+
+  h3 {
+    font-size: 16px;
+  }
+
+  pre {
+    font-size: 12px;
+    padding: 10px 12px;
+  }
+
+  .example-post {
+    font-size: 13px;
+    padding: 12px 14px;
+  }
     }
+    
   </style>
 </head>
 
