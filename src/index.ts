@@ -2318,25 +2318,32 @@ main {
     flex-shrink: 0;
   }
 
-  .avatar-wrap {
-    position: absolute;
-    top: 0;
-    transform: translateX(-50%);
-    z-index: 1;
-  }
+.avatar-wrap {
+  position: absolute;
+  top: 0;
+  width: 40px;
+  height: 40px;
+  transform: translateX(-50%);
+  z-index: 1;
+  flex: 0 0 40px;
+}
 
-  .avatar,
-  .avatar-placeholder {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    background: white;
-  }
+.avatar,
+.avatar-placeholder {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  max-width: none;
+  flex: 0 0 40px;
+  border-radius: 50%;
+  background: white;
+}
 
-  .avatar {
-    object-fit: cover;
-    display: block;
-  }
+.avatar {
+  object-fit: cover;
+  display: block;
+  aspect-ratio: 1 / 1;
+}
 
   .branch-svg {
     position: absolute;
@@ -2400,11 +2407,12 @@ main {
     overflow: hidden;
   }
 
-  .embed img,
-  .post img,
-  svg {
-    max-width: 100%;
-  }
+.embed img,
+.post-body img,
+.post-body svg {
+  max-width: 100%;
+}
+
 
   .embed img {
     border-radius: 8px;
