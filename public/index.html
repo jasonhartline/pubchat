@@ -183,31 +183,33 @@
     </div>
   </main>
 
+
   <script>
-    function parseArxivInput(raw) {
-      const s = raw.trim();
+  function parseArxivInput(raw) {
+    const s = raw.trim();
 
-      const urlMatch = s.match(/arxiv\\.org\\/(?:abs|pdf)\\/(\\d{4}\\.\\d{4,5})(?:v\\d+)?/i);
-      if (urlMatch) return urlMatch[1];
+    const urlMatch = s.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})(?:v\d+)?/i);
+    if (urlMatch) return urlMatch[1];
 
-      const idMatch = s.match(/^(\\d{4}\\.\\d{4,5})(?:v\\d+)?$/);
-      if (idMatch) return idMatch[1];
+    const idMatch = s.match(/^(\d{4}\.\d{4,5})(?:v\d+)?$/);
+    if (idMatch) return idMatch[1];
 
-      return null;
+    return null;
+  }
+
+  document.getElementById("pubchat-form").addEventListener("submit", event => {
+    event.preventDefault();
+
+    const id = parseArxivInput(document.getElementById("pubchat-input").value);
+
+    if (!id) {
+      alert("Please enter a valid arXiv ID or arXiv URL.");
+      return;
     }
 
-    document.getElementById("pubchat-form").addEventListener("submit", event => {
-      event.preventDefault();
-
-      const id = parseArxivInput(document.getElementById("pubchat-input").value);
-
-      if (!id) {
-        alert("Please enter a valid arXiv ID or arXiv URL.");
-        return;
-      }
-
-      window.location.href = `/chat/arxiv/${id}`;
-    });
+    window.location.href = `/chat/arxiv/${id}`;
+  });
   </script>
+  
 </body>
 </html>

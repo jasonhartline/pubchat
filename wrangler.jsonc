@@ -8,5 +8,19 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS"
-  }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ANCHOR_GATE",
+        "class_name": "AnchorGate"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AnchorGate"]
+    }
+  ]
 }

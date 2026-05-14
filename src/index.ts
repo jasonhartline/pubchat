@@ -7,6 +7,8 @@ export interface Env {
   ASSETS: Fetcher;
   ENVIRONMENT: string; // "dev" or undefined
   API_CONTACT_EMAIL?: string;
+
+  ANCHOR_GATE: DurableObjectNamespace;
 }
 
 const ANCHOR_COLLECTION = "org.pubchat.anchor";
@@ -35,12 +37,12 @@ function pubchatUserAgent(env: Env): string {
   return `PubChat/0.1 (https://pubchat.org${contact})`;
 }
 
-type Source = "arxiv";
-
 type Route =
   | { kind: "at"; source: Source; id: string }
   | { kind: "chat"; source: Source; id: string; format: "html" | "json" }
   | { kind: "reply" };
+
+
 
 
 type SourceId = {
@@ -58,19 +60,77 @@ type AnchorRecord = {
   };
 };
 
-const ARXIV_ID_PATH = String.raw`\d{4}\.\d{4,5}(?:v\d+)?`;
-const ARXIV_ID_RE = new RegExp(`^(${ARXIV_ID_PATH})$`);
 
+type Source = "arxiv" | "ssrn";
 
-function parseArxivId(raw: string): SourceId | null {
-  const m = raw.trim().match(ARXIV_ID_RE);
-  if (!m) return null;
+type MetadataResolver = (
+  env: Env,
+  id: string,
+) => Promise<PaperMetadata>;
 
-  return {
+type SourceConfig = {
+  source: Source;
+  pathRe: string;
+  parseId: (raw: string) => string | null;
+  doi?: (id: string) => string;
+  homeUrl: (id: string) => string;
+  pdfUrl?: (id: string) => string;
+  metadataResolvers: MetadataResolver[];
+};
+
+const SOURCE_CONFIGS: Record<Source, SourceConfig> = {
+  arxiv: {
     source: "arxiv",
-    id: m[1].replace(/v\d+$/, ""),
-  };
+    pathRe: String.raw`\d{4}\.\d{4,5}(?:v\d+)?`,
+    parseId(raw) {
+      return /^\d{4}\.\d{4,5}(?:v\d+)?$/.test(raw)
+        ? raw.replace(/v\d+$/, "")
+        : null;
+    },
+    doi(id) {
+      return `10.48550/arXiv.${id}`;
+    },
+    homeUrl(id) {
+      return `https://arxiv.org/abs/${id}`;
+    },
+    pdfUrl(id) {
+      return `https://arxiv.org/pdf/${id}.pdf`;
+    },
+    metadataResolvers: [
+      (env, id) => fetchDataciteMetadata("arxiv", env, id),
+      fetchArxivMetadata,
+    ],
+  },
+
+  ssrn: {
+    source: "ssrn",
+    pathRe: String.raw`\d+`,
+    parseId(raw) {
+      return /^\d+$/.test(raw) ? raw : null;
+    },
+    doi(id) {
+      return `10.2139/ssrn.${id}`;
+    },
+    homeUrl(id) {
+      return `https://papers.ssrn.com/sol3/papers.cfm?abstract_id=${id}`;
+    },
+    metadataResolvers: [
+      (env, id) => fetchDataciteMetadata("ssrn", env, id),
+    ],
+  },
+};
+
+const SOURCES = Object.keys(SOURCE_CONFIGS) as Source[];
+
+function sourceConfig(source: Source): SourceConfig {
+  return SOURCE_CONFIGS[source];
 }
+
+function parseSourceId(source: Source, raw: string): SourceId | null {
+  const id = sourceConfig(source).parseId(raw);
+  return id ? { source, id } : null;
+}
+
 
 
 
@@ -89,7 +149,13 @@ type DiscussionPost = {
 
   avatar: string | undefined;
   hasReplies: boolean;
+
+  imported?: boolean;
+  importSourceUrl?: string;
+  importedByHandle?: string;
 };
+
+
 
 
 type MetadataProvider =
@@ -181,6 +247,179 @@ async function fetchDiscussionThread(
   return out;
 }
 
+
+
+type BlueskyPostRef = {
+  url: string;
+  handleOrDid: string;
+  rkey: string;
+};
+
+
+
+
+function parseBlueskyPostUrl(raw: string): BlueskyPostRef | null {
+  const url = raw.trim();
+
+  const m = url.match(
+    /^(?:https:\/\/)?(?:www\.)?(?:staging\.)?bsky\.app\/profile\/([^/\s]+)\/post\/([^/\s?#]+)\/?(?:[?#][^\s]*)?$/
+  );
+
+  if (!m) return null;
+
+  const [, rawHandleOrDid, rawRkey] = m;
+
+  return {
+    url: url.startsWith("http") ? url : `https://${url}`,
+    handleOrDid: decodeURIComponent(rawHandleOrDid).replace(/^@/, ""),
+    rkey: decodeURIComponent(rawRkey),
+  };
+}
+
+function linkFacetUris(post: DiscussionPost): string[] {
+  return (post.facets ?? [])
+    .flatMap((facet: any) => facet.features ?? [])
+    .filter((feature: any) =>
+      feature?.$type === "app.bsky.richtext.facet#link" &&
+      typeof feature.uri === "string"
+    )
+    .map((feature: any) => feature.uri);
+}
+
+function parseSoleBlueskyPostImport(post: DiscussionPost): BlueskyPostRef | null {
+  const fromText = parseBlueskyPostUrl(post.text);
+  if (fromText) return fromText;
+
+  const uris = linkFacetUris(post)
+    .map(parseBlueskyPostUrl)
+    .filter((x): x is BlueskyPostRef => x !== null);
+
+  if (uris.length !== 1) return null;
+
+  const visible = post.text.trim();
+
+  const looksLikeOnlyLink =
+    visible === "" ||
+    visible.startsWith("bsky.app/") ||
+    visible.startsWith("https://bsky.app/") ||
+    visible.startsWith("https://www.bsky.app/") ||
+    visible.startsWith("https://staging.bsky.app/");
+
+  if (!looksLikeOnlyLink) return null;
+
+  return uris[0];
+}
+
+
+async function blueskyPostRefToAtUri(
+  agent: AtpAgent,
+  ref: BlueskyPostRef,
+): Promise<string> {
+  const did = ref.handleOrDid.startsWith("did:")
+    ? ref.handleOrDid
+    : (await agent.com.atproto.identity.resolveHandle({
+        handle: ref.handleOrDid,
+      })).data.did;
+
+  return `at://${did}/${POST_COLLECTION}/${ref.rkey}`;
+}
+
+async function fetchDiscussionThreadWithImports(
+  agent: AtpAgent,
+  rootUri: string,
+): Promise<DiscussionPost[]> {
+  console.log("[imports] fetchDiscussionThreadWithImports called", { rootUri });
+
+  const anchorThread = await fetchDiscussionThread(agent, rootUri);
+
+console.log("[imports] anchorThread count", anchorThread.length);
+console.log("[imports] anchorThread texts", anchorThread.map(p => ({
+  uri: p.uri,
+  author: p.authorHandle,
+  depth: p.depth,
+  isRoot: p.isRoot,
+  text: p.text,
+  blueskyUrl: p.blueskyUrl,
+})));
+
+
+  
+  const knownPostUris = new Set(anchorThread.map(post => post.uri));
+  const chunks: DiscussionPost[][] = anchorThread.map(post => [post]);
+
+  for (let i = 0; i < chunks.length; i++) {
+    const importPost = chunks[i][0];
+    if (!importPost) continue;
+
+    const ref = parseSoleBlueskyPostImport(importPost);
+
+    console.log("[imports] parse import result", {
+      i,
+      matched: !!ref,
+      ref,
+      text: importPost.text,
+      facets: importPost.facets,
+    });
+    
+    if (!ref) continue;
+
+    let importedRootUri: string;
+
+    try {
+      importedRootUri = await blueskyPostRefToAtUri(agent, ref);
+    } catch (err) {
+      console.log("Could not resolve imported Bluesky thread URL", ref.url, err);
+      continue;
+    }
+
+    if (knownPostUris.has(importedRootUri)) {
+      continue;
+    }
+
+    let importedThread: DiscussionPost[];
+
+    try {
+      importedThread = await fetchDiscussionThread(agent, importedRootUri);
+    } catch (err) {
+      console.log("Could not fetch imported Bluesky thread", importedRootUri, err);
+      continue;
+    }
+
+    if (importedThread.length === 0) {
+      continue;
+    }
+
+    // Mark all posts known before replacing the chunk.
+    for (const post of importedThread) {
+      knownPostUris.add(post.uri);
+    }
+
+    const depthOffset = importPost.depth - importedThread[0].depth;
+
+    chunks[i] = importedThread.map((post, j) => ({
+      ...post,
+      depth: post.depth + depthOffset,
+
+      // This is no longer the root of the PubChat-rendered discussion.
+      // It may still be the root of the imported Bluesky thread.
+      isRoot: false,
+
+      imported: true,
+      importSourceUrl: j === 0 ? ref.url : undefined,
+      importedByHandle: j === 0 ? importPost.authorHandle : undefined,
+    }));
+  }
+
+  return chunks.flat();
+}
+
+
+
+
+
+
+
+
 function rkeyComponent(s: string): string {
   return s
     .toLowerCase()
@@ -226,6 +465,37 @@ function shortDescriptionWithAuthors(
   return `${truncated}…`;  // standard ellipsis
 }
 
+async function getOrCreateAnchorPostViaGate(
+  env: Env,
+  source: Source,
+  id: string,
+  metadata: PaperMetadata,
+): Promise<{
+  anchor: ExistingAnchor;
+  anchorPost: AnchorPost;
+}> {
+  const gateId = env.ANCHOR_GATE.idFromName(`${source}:${id}`);
+  const gate = env.ANCHOR_GATE.get(gateId);
+
+  const res = await gate.fetch("https://pubchat.internal/anchor-gate", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      source,
+      id,
+      metadata,
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Anchor gate failed: ${res.status} ${await res.text()}`);
+  }
+
+  return await res.json();
+}
+
 
 
 async function getAnchorRecord(agent: AtpAgent, source: Source, id: string) {
@@ -252,16 +522,58 @@ async function getAnchorRecord(agent: AtpAgent, source: Source, id: string) {
       cid: existing.data.cid,
       record: existing.data.value as AnchorRecord,
     };
-  } catch {
-    return {
-      exists: false as const,
+  } catch (err: any) {
+    const status =
+      err?.status ??
+      err?.response?.status ??
+      err?.cause?.status;
+
+    const errorName =
+      err?.error ??
+      err?.response?.data?.error ??
+      err?.data?.error;
+
+    const message = String(err?.message ?? "");
+
+    if (
+      status === 404 ||
+      errorName === "RecordNotFound" ||
+      /RecordNotFound/i.test(message)
+    ) {
+      return {
+        exists: false as const,
+        source,
+        sourceId: id,
+        rkey,
+        uri,
+      };
+    }
+
+    console.log("[anchor] getAnchorRecord failed", {
       source,
-      sourceId: id,
+      id,
       rkey,
-      uri,
-    };
+      status,
+      errorName,
+      message,
+      err,
+    });
+
+    throw err;
   }
 }
+
+type ExistingAnchor = Extract<
+  Awaited<ReturnType<typeof getAnchorRecord>>,
+  { exists: true }
+>;
+
+type AnchorPost = {
+  uri: string;
+  cid: string;
+  rkey: string;
+  blueskyUrl: string;
+};
 
 async function createBlueskyAnchorPost(
   agent: AtpAgent,
@@ -332,12 +644,15 @@ async function createAnchorWithPost(
     },
   };
 
+  console.log("[create anchor] creating anchor",{rkey})
   const created = await agent.com.atproto.repo.putRecord({
-    repo: did,
-    collection: ANCHOR_COLLECTION,
-    rkey,
-    record,
+  repo: did,
+  collection: ANCHOR_COLLECTION,
+  rkey,
+  record,
+  swapRecord: null as any,
   });
+  
 
   return {
     source,
@@ -376,26 +691,28 @@ function parseRoute(request: Request): Route | null {
   const url = new URL(request.url);
   const path = url.pathname;
 
+  for (const source of SOURCES) {
+    const cfg = sourceConfig(source);
 
-  let m = path.match(new RegExp(`^/at/arxiv/(${ARXIV_ID_PATH})$`));
-  if (request.method === "GET" && m) {
-    const sid = parseArxivId(m[1]);
-    if (!sid) return null;
-    return { kind: "at", source: sid.source, id: sid.id };
+    let m = path.match(new RegExp(`^/at/${source}/(${cfg.pathRe})$`));
+    if (request.method === "GET" && m) {
+      const sid = parseSourceId(source, m[1]);
+      if (!sid) return null;
+      return { kind: "at", source: sid.source, id: sid.id };
+    }
+
+    m = path.match(new RegExp(`^/chat/${source}/(${cfg.pathRe})(\\.json)?$`));
+    if (request.method === "GET" && m) {
+      const sid = parseSourceId(source, m[1]);
+      if (!sid) return null;
+      return {
+        kind: "chat",
+        source: sid.source,
+        id: sid.id,
+        format: m[2] ? "json" : "html",
+      };
+    }
   }
-  
-  m = path.match(new RegExp(`^/chat/arxiv/(${ARXIV_ID_PATH})(\\.json)?$`));
-  if (request.method === "GET" && m) {
-    const sid = parseArxivId(m[1]);
-    if (!sid) return null;
-    return {
-      kind: "chat",
-      source: sid.source,
-      id: sid.id,
-      format: m[2] ? "json" : "html",
-    };
-  }
-  
 
   if (request.method === "POST" && path === "/reply") {
     return { kind: "reply" };
@@ -411,30 +728,93 @@ type RequestContext = {
   debug?: boolean;
 };
 
+
 function canonicalRedirect(request: Request): Response | null {
   if (request.method !== "GET") return null;
 
   const url = new URL(request.url);
 
-  const m = url.pathname.match(
-    new RegExp(`^/(chat|at)/arxiv/(${ARXIV_ID_PATH})(\\.json)?$`)
-  );
+  for (const source of SOURCES) {
+    const cfg = sourceConfig(source);
 
-  if (!m) return null;
+    const m = url.pathname.match(
+      new RegExp(`^/(chat|at)/${source}/(${cfg.pathRe})(\\.json)?$`)
+    );
 
-  const [, kind, rawId, jsonSuffix] = m;
-  const canonicalId = rawId.replace(/v\d+$/, "");
+    if (!m) continue;
 
-  if (canonicalId === rawId) return null;
+    const [, kind, rawId, jsonSuffix] = m;
+    const sid = parseSourceId(source, rawId);
+    if (!sid) return null;
 
-  url.pathname = `/${kind}/arxiv/${canonicalId}${jsonSuffix ?? ""}`;
+    if (sid.id === rawId) return null;
 
-  return new Response(null, {
-    status: 302,
-    headers: {
-      Location: url.toString(),
-    },
-  });
+    url.pathname = `/${kind}/${source}/${sid.id}${jsonSuffix ?? ""}`;
+
+    return new Response(null, {
+      status: 302,
+      headers: { Location: url.toString() },
+    });
+  }
+
+  return null;
+}
+
+
+export class AnchorGate {
+  constructor(
+    private state: DurableObjectState,
+    private env: Env,
+  ) {}
+
+  async fetch(request: Request): Promise<Response> {
+    if (request.method !== "POST") {
+      return json({ error: "Method not allowed" }, 405);
+    }
+
+    return await this.state.blockConcurrencyWhile(async () => {
+      const body = await request.json<{
+        source: Source;
+        id: string;
+        metadata: PaperMetadata;
+      }>();
+
+      const { source, id, metadata } = body;
+
+      const agent = await getAgent(this.env);
+
+      // Critical: reread inside the per-paper Durable Object.
+      const existingAnchor = await getAnchorRecord(agent, source, id);
+
+      if (existingAnchor.exists && existingAnchor.record.discussion) {
+        return json({
+          anchor: existingAnchor,
+          anchorPost: anchorPostFromAnchor(agent, existingAnchor),
+        });
+      }
+
+      const anchorPost = await createBlueskyAnchorPost(
+        agent,
+        source,
+        id,
+        metadata,
+      );
+
+      const anchor = await createAnchorWithPost(
+        agent,
+        source,
+        id,
+        existingAnchor.rkey,
+        existingAnchor.uri,
+        anchorPost,
+      );
+
+      return json({
+        anchor,
+        anchorPost,
+      });
+    });
+  }
 }
 
 export default {
@@ -477,18 +857,25 @@ export default {
       if (request.method === "GET" && url.pathname === "/debug/posts") {
 	return renderDebugList(agent, POST_COLLECTION, "posts");
       }
+
+      // debug: papers grouped with anchors/posts
+      if (request.method === "GET" && url.pathname === "/debug/papers") {
+	return renderDebugPapers(agent);
+      }
+
       
       // debug: delete anchor
       let m = url.pathname.match(/^\/debug\/anchors\/delete\/([^/]+)$/);
       if (request.method === "GET" && m) {
-	return debugDelete(agent, ANCHOR_COLLECTION, m[1], "/debug/anchors");
+	return debugDelete(request, agent, ANCHOR_COLLECTION, m[1], "/debug/anchors");
       }
       
       // debug: delete post
       m = url.pathname.match(/^\/debug\/posts\/delete\/([^/]+)$/);
       if (request.method === "GET" && m) {
-	return debugDelete(agent, POST_COLLECTION, m[1], "/debug/posts");
+	return debugDelete(request, agent, POST_COLLECTION, m[1], "/debug/posts");
       }
+
     }
 	
     const route = parseRoute(request);
@@ -510,28 +897,6 @@ export default {
 };
 
 
-
-async function blueskyPostExists(
-  agent: AtpAgent,
-  uri: string,
-): Promise<boolean> {
-  try {
-    const parts = uri.split("/");
-    const rkey = parts.pop()!;
-    const collection = parts.pop()!;
-    const repo = uri.split("/")[2];
-
-    await agent.com.atproto.repo.getRecord({
-      repo,
-      collection,
-      rkey,
-    });
-
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 
 
@@ -575,13 +940,14 @@ async function handleChat(
   let anchor;
   let anchorPost;
 
-  const hasUsableAnchorPost =
-    existingAnchor.exists &&
-    existingAnchor.record.discussion &&
-    await blueskyPostExists(agent, existingAnchor.record.discussion.uri);
+  const hasAnchorDiscussion =
+	existingAnchor.exists &&
+	!!existingAnchor.record.discussion;
 
+
+  
   // 3. arXiv rate limited, but existing PubChat page exists.
-  if ((metadata as any).rateLimited && hasUsableAnchorPost) {
+  if ((metadata as any).rateLimited && hasAnchorDiscussion) {
     anchor = existingAnchor;
     anchorPost = anchorPostFromAnchor(agent, anchor);
 
@@ -592,7 +958,7 @@ async function handleChat(
       route.id,
     );
 
-    const thread = await fetchDiscussionThread(agent, anchorPost.uri);
+    const thread = await fetchDiscussionThreadWithImports(agent, anchorPost.uri);
 
     const data = {
       source: route.source,
@@ -633,28 +999,22 @@ async function handleChat(
   }
 
   // 5. Normal path.
-  if (hasUsableAnchorPost) {
+  if (hasAnchorDiscussion) {
     anchor = existingAnchor;
     anchorPost = anchorPostFromAnchor(agent, anchor);
   } else {
-    anchorPost = await createBlueskyAnchorPost(
-      agent,
+    const resolved = await getOrCreateAnchorPostViaGate(
+      env,
       route.source,
       route.id,
       metadata,
     );
-
-    anchor = await createAnchorWithPost(
-      agent,
-      route.source,
-      route.id,
-      existingAnchor.rkey,
-      existingAnchor.uri,
-      anchorPost,
-    );
+    
+    anchor = resolved.anchor;
+    anchorPost = resolved.anchorPost;
   }
 
-  const thread = await fetchDiscussionThread(agent, anchorPost.uri);
+  const thread = await fetchDiscussionThreadWithImports(agent, anchorPost.uri);
 
   const data = {
     source: route.source,
@@ -675,6 +1035,7 @@ async function handleChat(
       notFound: metadata.notFound,
       anchorExists: existingAnchor.exists,
       hasDiscussion: !!existingAnchor.record?.discussion,
+      hasAnchorDiscussion,
       metadataProvider: metadata.metadataProvider,
     };
   }
@@ -725,46 +1086,51 @@ async function resolveMetadata(
   source: Source,
   id: string,
 ): Promise<PaperMetadata> {
-  switch (source) {
-    case "arxiv":
-    return resolveArxivMetadata(env,id);
+  const cfg = sourceConfig(source);
+
+  let lastError: unknown;
+
+  for (const resolver of cfg.metadataResolvers) {
+    try {
+      return await resolver(env, id);
+    } catch (err) {
+      console.log(`Metadata resolver failed for ${source}:${id}`, err);
+      lastError = err;
+    }
   }
 
-  throw new Error(`Unsupported source: ${source}`);
+  throw lastError ?? new Error(`Could not resolve metadata for ${source}:${id}`);
 }
 
 
 
-async function resolveArxivMetadata(
+function doiFor(source: Source, id: string): string | undefined {
+  return sourceConfig(source).doi?.(id);
+}
+
+function homeUrlFor(source: Source, id: string): string {
+  return sourceConfig(source).homeUrl(id);
+}
+
+function pdfUrlFor(source: Source, id: string): string | undefined {
+  return sourceConfig(source).pdfUrl?.(id);
+}
+
+
+async function fetchDataciteMetadata(
+  source: Source,
   env: Env,
   id: string,
 ): Promise<PaperMetadata> {
-  try {
-    return await fetchDataciteForArxiv(env,id);
-  } catch (err) {
-    console.log("DataCite failed; falling back to arXiv", err);
-    return await fetchArxiv(id);
-  }
-}
-
-function arxivDoi(id: string): string {
-  return `10.48550/arXiv.${id}`;
-}
-
-async function fetchDataciteForArxiv(
-  env: Env,
-  id: string,
-): Promise<PaperMetadata> {
-  const doi = arxivDoi(id);
-  const homeUrl = `https://arxiv.org/abs/${id}`;
-  const pdfUrl = `https://arxiv.org/pdf/${id}.pdf`;
+  const doi = doiFor(source, id);
+  if (!doi) throw new Error(`No DOI mapping for source: ${source}`);
 
   const res = await fetch(
     `https://api.datacite.org/dois/${encodeURIComponent(doi)}`,
     {
       headers: {
-	"user-agent": pubchatUserAgent(env),
-	accept: "application/vnd.api+json",
+        "user-agent": pubchatUserAgent(env),
+        accept: "application/vnd.api+json",
       },
     },
   );
@@ -776,14 +1142,10 @@ async function fetchDataciteForArxiv(
   const data = await res.json<any>();
   const a = data.data?.attributes;
 
-  if (!a) {
-    throw new Error("DataCite response missing attributes");
-  }
+  if (!a) throw new Error("DataCite response missing attributes");
 
   const title = a.titles?.[0]?.title;
-  if (!title) {
-    throw new Error("DataCite metadata missing title");
-  }
+  if (!title) throw new Error("DataCite metadata missing title");
 
   const year = a.publicationYear;
   if (!Number.isFinite(year)) {
@@ -809,78 +1171,28 @@ async function fetchDataciteForArxiv(
       ?.find((d: any) => d.descriptionType === "Abstract")
       ?.description ?? null;
 
+  if (!abstract) {
+    throw new Error("DataCite metadata missing abstract");
+  }
+
   return {
     title,
     abstract,
     authors,
     year,
 
-    source: "arxiv",
+    source,
     sourceId: id,
 
-    homeUrl,
-    pdfUrl,
+    homeUrl: homeUrlFor(source, id),
+    pdfUrl: pdfUrlFor(source, id),
 
     doi: a.doi ?? doi,
     metadataProvider: "datacite",
   };
 }
 
-async function fetchSemanticScholarForArxiv(
-  id: string,
-): Promise<PaperMetadata> {
-  const homeUrl = `https://arxiv.org/abs/${id}`;
-  const pdfUrl = `https://arxiv.org/pdf/${id}.pdf`;
 
-  const url =
-    `https://api.semanticscholar.org/graph/v1/paper/arXiv:${encodeURIComponent(id)}` +
-    `?fields=title,abstract,year,authors,externalIds,url`;
-
-  const res = await fetch(url, {
-    headers: {
-      "user-agent": "PubChat/0.1",
-    },
-  });
-
-  if (!res.ok) {
-    throw new Error(`Semantic Scholar request failed: ${res.status}`);
-  }
-
-  const paper = await res.json<any>();
-
-  const title = paper.title;
-  if (!title) throw new Error("Semantic Scholar paper missing title");
-
-  const year = paper.year;
-  if (!Number.isFinite(year)) {
-    throw new Error("Semantic Scholar paper missing year");
-  }
-
-  const authors =
-    paper.authors
-      ?.map((a: any) => a.name)
-      .filter(Boolean) ?? [];
-
-  if (authors.length === 0) {
-    throw new Error("Semantic Scholar paper missing authors");
-  }
-
-  return {
-    title,
-    abstract: paper.abstract ?? null,
-    authors,
-    year,
-
-    source: "arxiv",
-    sourceId: id,
-
-    homeUrl,
-    pdfUrl,
-
-    doi: paper.externalIds?.DOI,
-    metadataProvider: "semanticscholar",
-  };
-}
 
 function getAllAuthors(entry: string): string[] {
   return [...entry.matchAll(/<author[^>]*>([\s\S]*?)<\/author>/g)]
@@ -961,7 +1273,7 @@ async function metadataFromBlueskyPost(
   };
 }
 
-async function fetchArxiv(
+async function fetchArxivMetadata(
   id: string,
 ): Promise<PaperMetadata> {
   const homeUrl = `https://arxiv.org/abs/${id}`;
@@ -1071,40 +1383,6 @@ async function fetchArxiv(
   };
 }
 
-async function fetchOpenAlexForArxiv(
-  id: string,
-): Promise<PaperMetadata> {
-  const arxivAbsUrl = `https://arxiv.org/abs/${id}`;
-
-  const url =
-    `https://api.openalex.org/works?search=${encodeURIComponent(arxivAbsUrl)}&per-page=5`;
-
-  const res = await fetch(url, {
-    headers: {
-      "user-agent": "PubChat/0.1",
-    },
-  });
-
-  if (!res.ok) {
-    throw new Error(`OpenAlex request failed: ${res.status}`);
-  }
-
-  const data = await res.json<any>();
-
-  const work = data.results?.find((w: any) =>
-    (w.locations ?? []).some((loc: any) =>
-      loc.landing_page_url === arxivAbsUrl ||
-      loc.landing_page_url === `${arxivAbsUrl}v1` ||
-      loc.landing_page_url?.startsWith(`${arxivAbsUrl}v`)
-    )
-  );
-
-  if (!work) {
-    throw new Error("OpenAlex work not found for arXiv ID");
-  }
-
-  return normalizeOpenAlexWork(work, "arxiv", id);
-}
 
 function reconstructOpenAlexAbstract(
   inverted?: Record<string, number[]>,
@@ -1167,6 +1445,507 @@ function normalizeOpenAlexWork(
     metadataProvider: "openalex",
   };
 }
+
+
+function parsePubChatPaperUrl(raw: string): SourceId | null {
+  if (!raw) return null;
+
+  let url: URL;
+
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return null;
+  }
+
+  if (url.hostname !== "pubchat.org") return null;
+
+  const m = url.pathname.match(
+    /^\/chat\/arxiv\/(\d{4}\.\d{4,5})(?:v\d+)?\/?$/
+  );
+
+  if (!m) return null;
+
+  return {
+    source: "arxiv",
+    id: m[1],
+  };
+}
+
+function paperKey(source: Source, id: string): string {
+  return `${source}:${id}`;
+}
+
+function paperTitle(source: Source, id: string): string {
+  if (source === "arxiv") return `arXiv:${id}`;
+  return `${source}:${id}`;
+}
+
+async function listDebugRecords(agent: AtpAgent, collection: string) {
+  const did = agent.session!.did;
+
+  const res = await agent.com.atproto.repo.listRecords({
+    repo: did,
+    collection,
+    limit: 100,
+  });
+
+  return res.data.records;
+}
+
+
+
+
+function sourceIdFromPostRecord(value: any): SourceId | null {
+  const candidates: string[] = [];
+
+  const embedUri = value.embed?.external?.uri;
+  if (typeof embedUri === "string") {
+    candidates.push(embedUri);
+  }
+
+  for (const facet of value.facets ?? []) {
+    for (const feature of facet.features ?? []) {
+      if (
+        feature?.$type === "app.bsky.richtext.facet#link" &&
+        typeof feature.uri === "string"
+      ) {
+        candidates.push(feature.uri);
+      }
+    }
+  }
+
+  const text = String(value.text ?? "");
+  for (const m of text.matchAll(/https?:\/\/\S+/g)) {
+    candidates.push(m[0]);
+  }
+
+  for (const raw of candidates) {
+    const sid = parsePubChatPaperUrl(raw);
+    if (sid) return sid;
+  }
+
+  return null;
+}
+
+async function renderDebugPapers(agent: AtpAgent): Promise<Response> {
+  const [anchorRecords, postRecords] = await Promise.all([
+    listDebugRecords(agent, ANCHOR_COLLECTION),
+    listDebugRecords(agent, POST_COLLECTION),
+  ]);
+
+  console.log("[debug-papers] totals", {
+    anchors: anchorRecords.length,
+    posts: postRecords.length,
+  });
+
+  type DebugAnchor = {
+    rkey: string;
+    uri: string;
+    cid: string;
+    value: AnchorRecord;
+  };
+
+  type DebugPost = {
+    rkey: string;
+    uri: string;
+    cid: string;
+    value: any;
+    sourceId: SourceId | null;
+  };
+
+  type DebugPaperGroup = {
+    source: Source;
+    id: string;
+    anchors: DebugAnchor[];
+    posts: DebugPost[];
+  };
+
+  const groups = new Map<string, DebugPaperGroup>();
+  const orphanPosts: DebugPost[] = [];
+
+  function getGroup(source: Source, id: string): DebugPaperGroup {
+    const key = paperKey(source, id);
+
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        source,
+        id,
+        anchors: [],
+        posts: [],
+      };
+      groups.set(key, group);
+    }
+
+    return group;
+  }
+
+  // 1. Group posts by their embedded PubChat paper URL.
+  for (const r of postRecords) {
+    const value = r.value as any;
+
+
+    const sid = sourceIdFromPostRecord(value);
+
+    console.log("[debug-papers] post paper extraction", {
+      uri: r.uri,
+      text: value.text,
+      embedExternalUri: value.embed?.external?.uri,
+      facets: value.facets,
+      parsed: sid,
+    });
+
+
+    const post: DebugPost = {
+      rkey: extractRkeyFromUri(r.uri),
+      uri: r.uri,
+      cid: r.cid,
+      value,
+      sourceId: sid,
+    };
+
+    if (sid) {
+      getGroup(sid.source, sid.id).posts.push(post);
+    } else {
+      orphanPosts.push(post);
+    }
+  }
+
+  // 2. Add anchors to the matching paper group.
+  for (const r of anchorRecords) {
+    const value = r.value as AnchorRecord;
+
+    if (!value.source || !value.sourceId) continue;
+
+    const source = value.source;
+    const id = value.sourceId;
+
+    getGroup(source, id).anchors.push({
+      rkey: extractRkeyFromUri(r.uri),
+      uri: r.uri,
+      cid: r.cid,
+      value,
+    });
+  }
+
+  function issueCount(group: DebugPaperGroup): number {
+    const connectedUris = new Set(
+      group.anchors
+	.map(a => a.value.discussion?.uri)
+	.filter((x): x is string => !!x)
+    );
+
+    const connectedPostCount =
+	  group.posts.filter(p => connectedUris.has(p.uri)).length;
+
+    let issues = 0;
+
+    // Need exactly one anchor record.
+    issues += Math.abs(group.anchors.length - 1);
+
+    // Need exactly one PubChat-looking anchor post.
+    // Each extra duplicate post counts separately.
+    issues += Math.abs(group.posts.length - 1);
+
+    // Need exactly one of those posts to be connected by the anchor record.
+    issues += Math.abs(connectedPostCount - 1);
+
+    return issues;
+  }
+  
+
+  const sortedGroups = [...groups.values()].sort((a, b) => {
+    const issueDiff = issueCount(b) - issueCount(a);
+    if (issueDiff !== 0) return issueDiff;
+    
+    return paperKey(a.source, a.id).localeCompare(paperKey(b.source, b.id));
+  });
+  
+  
+  
+  function jsonButton(data: unknown): string {
+    return `
+      <button
+        type="button"
+        data-json="${escapeAttr(JSON.stringify(data, null, 2))}"
+        onclick="showJson(this)"
+      >
+        view
+      </button>
+    `;
+  }
+
+  function renderAnchorRow(anchor: DebugAnchor): string {
+    const discussionUri = anchor.value.discussion?.uri ?? "";
+    const status = discussionUri ? "has discussion" : "no discussion";
+
+    return `
+      <tr>
+        <td>anchor</td>
+        <td><code>${escapeHtml(anchor.rkey)}</code></td>
+        <td>${escapeHtml(status)}</td>
+        <td><code>${escapeHtml(discussionUri)}</code></td>
+        <td>${jsonButton({
+          uri: anchor.uri,
+          cid: anchor.cid,
+          value: anchor.value,
+        })}</td>
+        <td>
+          <a href="/debug/anchors/delete/${encodeURIComponent(anchor.rkey)}">
+            delete anchor
+          </a>
+        </td>
+      </tr>
+    `;
+  }
+
+  function renderPostRow(post: DebugPost, connectedUris: Set<string>): string {
+    const text = String(post.value.text ?? "");
+    const externalUri = String(post.value.embed?.external?.uri ?? "");
+    const connected = connectedUris.has(post.uri);
+
+    return `
+      <tr class="${connected ? "connected" : "extra"}">
+        <td>post</td>
+        <td><code>${escapeHtml(post.rkey)}</code></td>
+        <td>
+          ${
+            connected
+              ? `<strong>connected to anchor</strong>`
+              : `<span class="muted">extra / duplicate candidate</span>`
+          }
+        </td>
+        <td>
+          <div class="post-text">${escapeHtml(text)}</div>
+          ${
+            externalUri
+              ? `<div><code>${escapeHtml(externalUri)}</code></div>`
+              : ""
+          }
+        </td>
+        <td>${jsonButton({
+          uri: post.uri,
+          cid: post.cid,
+          value: post.value,
+        })}</td>
+        <td>
+          <a href="/debug/posts/delete/${encodeURIComponent(post.rkey)}">
+            delete post
+          </a>
+        </td>
+      </tr>
+    `;
+  }
+
+  const groupHtml = sortedGroups.map(group => {
+    const connectedUris = new Set(
+      group.anchors
+        .map(a => a.value.discussion?.uri)
+        .filter((x): x is string => !!x)
+    );
+
+    const connectedPostCount =
+      group.posts.filter(p => connectedUris.has(p.uri)).length;
+
+    const extraPostCount = group.posts.length - connectedPostCount;
+
+    const rows = [
+      ...group.anchors.map(renderAnchorRow),
+      ...group.posts.map(post => renderPostRow(post, connectedUris)),
+    ].join("");
+
+    return `
+      <section class="paper-group">
+        <h2>
+          ${escapeHtml(paperTitle(group.source, group.id))}
+          <span class="counts">
+            ${group.anchors.length} anchor(s),
+            ${group.posts.length} post(s),
+            ${connectedPostCount} connected,
+            ${extraPostCount} extra
+          </span>
+        </h2>
+
+        <p>
+          <a href="/chat/${escapeAttr(group.source)}/${escapeAttr(group.id)}">
+            open chat page
+          </a>
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>type</th>
+              <th>rkey</th>
+              <th>status</th>
+              <th>linked/text</th>
+              <th>record</th>
+              <th>action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || `<tr><td colspan="6" class="muted">No records.</td></tr>`}
+          </tbody>
+        </table>
+      </section>
+    `;
+  }).join("");
+
+  const orphanHtml = orphanPosts.length === 0
+    ? ""
+    : `
+      <section class="paper-group">
+        <h2>
+          Posts not matched to a PubChat paper
+          <span class="counts">${orphanPosts.length} post(s)</span>
+        </h2>
+
+        <table>
+          <thead>
+            <tr>
+              <th>type</th>
+              <th>rkey</th>
+              <th>status</th>
+              <th>linked/text</th>
+              <th>record</th>
+              <th>action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${orphanPosts.map(post => renderPostRow(post, new Set())).join("")}
+          </tbody>
+        </table>
+      </section>
+    `;
+
+  return html(`<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Debug papers</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 24px;
+      color: #0f1419;
+      background: #f3f7fb;
+    }
+
+    a {
+      color: #8b6fe8;
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .paper-group {
+      background: white;
+      border: 1px solid #dbe3ec;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      margin-top: 0;
+    }
+
+    h2 {
+      margin: 0 0 8px 0;
+    }
+
+    .counts {
+      color: #536471;
+      font-size: 14px;
+      font-weight: 400;
+      margin-left: 8px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    th,
+    td {
+      border-top: 1px solid #dbe3ec;
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+
+    th {
+      color: #536471;
+      font-weight: 600;
+    }
+
+    tr.connected {
+      background: rgba(139, 111, 232, 0.12);
+    }
+
+    tr.extra {
+      background: #fff8e5;
+    }
+
+    .muted {
+      color: #536471;
+    }
+
+    .post-text {
+      white-space: pre-wrap;
+      margin-bottom: 4px;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+    }
+
+    button {
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>Debug papers</h1>
+
+  <p>
+    <a href="/debug/anchors">anchors</a>
+    ·
+    <a href="/debug/posts">posts</a>
+  </p>
+
+  ${groupHtml || `<p class="muted">No PubChat paper records found.</p>`}
+
+  ${orphanHtml}
+
+  <dialog id="recordDialog" style="max-width: 900px; width: 90%;">
+    <form method="dialog" style="text-align: right;">
+      <button>close</button>
+    </form>
+    <pre id="recordJson" style="white-space: pre-wrap; overflow:auto;"></pre>
+  </dialog>
+
+  <script>
+    function showJson(button) {
+      document.getElementById("recordJson").textContent =
+        button.getAttribute("data-json") || "";
+      document.getElementById("recordDialog").showModal();
+    }
+  </script>
+</body>
+</html>`);
+}
+
+
+
+
 
 function renderUnavailablePage(args: {
   title: string;
@@ -1316,6 +2095,20 @@ function renderPostEmbed(embed: any): string {
   return "";
 }
 
+function renderImportedBy(post: DiscussionPost): string {
+  if (!post.importedByHandle) return "";
+
+  return `
+    <span class="imported-by">
+      (imported by
+      <a href="https://bsky.app/profile/${escapeAttr(post.importedByHandle)}"
+         target="_blank"
+         rel="noopener">@${escapeHtml(post.importedByHandle)}</a>)
+    </span>
+  `;
+}
+
+
 function marginX(level: number): number {
   return (2 / 3) * (1 - Math.pow(1.5, -level));
 }
@@ -1380,6 +2173,9 @@ function renderChatPage(data: {
 
   const image = "https://pubchat.org/static/pubchat-card.png";
 
+  const visibleThread = data.thread.filter(
+    post => post.uri !== data.anchorPost.uri,
+  );
   
   return `<!doctype html>
 <html>
@@ -1671,6 +2467,32 @@ main {
   color: #536471;
 }
 
+  .imported-post {
+    background: #f7f8fa;
+    box-shadow: inset 3px 0 0 var(--accent-soft);
+  }
+
+  .imported-post .avatar,
+  .imported-post .avatar-placeholder {
+    background: #f7f8fa;
+  }
+
+  .import-note {
+    margin: 2px 0 6px 0;
+    color: #536471;
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
+  .import-note a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .import-note a:hover {
+    text-decoration: underline;
+  }
+
   @media (max-width: 700px) {
     main {
       max-width: none;
@@ -1786,10 +2608,10 @@ ${
 
 
 ${
-  data.thread.filter(post => !post.isRoot).length === 0
+  visibleThread.length === 0
     ? '<div class="reply-box">' + blueskyReplyLink(data.anchorPost.blueskyUrl,"Start the discussion on Bluesky") + '</div>'
-    : data.thread.filter(post => !post.isRoot).map(post => `
-  <article class="post">
+    : visibleThread.map(post => `
+  <article class="post${post.imported ? " imported-post" : ""}">
   <div class="post-row">
     <div class="thread-margin">
       <div
@@ -1841,6 +2663,7 @@ ${
                </a>`
             : ""
         }
+        ${renderImportedBy(post)}
         ${
           post.createdAt
             ? `<span> · ${escapeHtml(renderPostDate(post.createdAt))}</span>`
@@ -1960,10 +2783,11 @@ async function renderDebugList(
 
 
 async function debugDelete(
+  request: Request,
   agent: AtpAgent,
   collection: string,
   rkey: string,
-  redirectTo: string
+  fallbackRedirectTo: string,
 ): Promise<Response> {
   const did = agent.session!.did;
 
@@ -1973,13 +2797,17 @@ async function debugDelete(
     rkey,
   });
 
+  const referrer = request.headers.get("referer");
+  const location = referrer || fallbackRedirectTo;
+
   return new Response(null, {
     status: 302,
     headers: {
-      Location: redirectTo,
+      Location: location,
     },
   });
 }
+
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data, null, 2), {
