@@ -12,9 +12,9 @@
   <meta property="og:image" content="https://pubchat.org/static/pubchat-card.png">
 
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="PubChat Helo">
+  <meta name="twitter:title" content="PubChat Guide">
+  <meta name="twitter:image" content="https://pubchat.org/static/pubchat-card.png">
   <meta name="twitter:description" content="Attach Bluesky discussion to academic papers.">
-  <meta name="twitter:image" content="https://pubchat.org/static/pubchat-card.pn
 
   <title>PubChat Guide</title>
   <link rel="icon" href="/static/favicon.png" sizes="32x32" type="image/png">
@@ -253,29 +253,34 @@ code,
       <section>
         <h2>What is PubChat?</h2>
 
+	
         <p>PubChat gives each supported paper a canonical discussion page, a Bluesky discussion thread, and a stable URL that anyone can share.</p>
 
         <p>Example:</p>
 
         <pre><code>https://pubchat.org/chat/arxiv/2601.22079</code></pre>
 
-        <p>PubChat currently supports arXiv papers and is designed to expand to other scholarly repositories.</p>
+	<p>PubChat currently supports arXiv papers and DOI-based papers when public metadata APIs provide title, authors, year, and abstract.</p>
+
       </section>
 
       <section>
         <h2>How PubChat Works</h2>
 
-        <h3>1. Every paper has a canonical PubChat page</h3>
+	<h3>1. Every paper has a canonical PubChat page</h3>
 
-        <p>For arXiv papers, the PubChat page is:</p>
+<p>PubChat pages use canonical paper identifiers:</p>
 
-        <pre><code>https://pubchat.org/chat/arxiv/&lt;id&gt;</code></pre>
+<pre><code>https://pubchat.org/chat/arxiv/&lt;id&gt;
+https://pubchat.org/chat/doi/&lt;doi&gt;</code></pre>
 
-        <p>Example:</p>
+<p>Examples:</p>
 
-        <pre><code>https://pubchat.org/chat/arxiv/2601.22079</code></pre>
+<pre><code>https://pubchat.org/chat/arxiv/2601.22079
+http://pubchat.org/chat/doi/10.1093/restud/rdaa053</code></pre>
 
-        <p>You can open a paper’s PubChat page by entering either the arXiv identifier or the arXiv URL on <a href="/">pubchat.org</a>.</p>
+	<p>You can open a paper’s PubChat page by entering an arXiv ID, arXiv URL, DOI, or DOI URL on <a href="/">pubchat.org</a>.</p>
+	
 
         <h3>2. PubChat creates a Bluesky anchor post</h3>
 
@@ -294,7 +299,8 @@ CC: PubChat</div>
 
         <p>Anyone can reply to the anchor post on Bluesky. PubChat reads the Bluesky thread and renders it as a paper discussion page.</p>
 
-        <p>A BlueSKy account is required to post.  No PubChat account is required.</p>
+	<p>A Bluesky account is required to post. No PubChat account is required.</p>
+
       </section>
 
       <section>
@@ -314,16 +320,14 @@ CC: PubChat</div>
   </ol>
 
   <p>
-    PubChat will display that existing thread inline on the paper page. Imported
-    posts are shown with a lightly shaded background and marked as imported.
-  </p>
+  PubChat displays the existing thread inline on the paper page. Imported posts
+  are shown with a lightly shaded background.
+</p>
 
-  <p>
-    To keep discussion pages stable, PubChat imports only the linked thread
-    itself. Links inside imported threads are shown as links; they are not
-    recursively imported. If the same thread is linked more than once, PubChat
-    expands it only the first time.
-  </p>
+<p>
+  PubChat imports only the linked thread itself. Links inside imported threads
+  remain ordinary links, and the same thread is expanded only once.
+</p>
 
 </section>
 

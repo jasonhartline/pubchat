@@ -72,6 +72,7 @@ function pubchatUserAgent(env: Env): string {
 type Route =
   | { kind: "at"; source: Source; id: string }
   | { kind: "chat"; source: Source; id: string; format: "html" | "json" }
+  | { kind: "open"; q: string }
   | { kind: "reply" };
 
 
@@ -93,7 +94,7 @@ type AnchorRecord = {
 };
 
 
-type Source = "arxiv" | "ssrn";
+type Source = "arxiv" | "ssrn" | "doi";
 
 type MetadataResolver = (
   env: Env,
@@ -150,6 +151,23 @@ const SOURCE_CONFIGS: Record<Source, SourceConfig> = {
       (env, id) => fetchDataciteMetadata("ssrn", env, id),
     ],
   },
+
+    doi: {
+    source: "doi",
+    pathRe: String.raw`.+`,
+    parseId(raw) {
+      return canonicalDoi(raw);
+    },
+    doi(id) {
+      return id;
+    },
+    homeUrl(id) {
+      return `https://doi.org/${id}`;
+    },
+    metadataResolvers: [
+      fetchCompositeDoiMetadata,
+    ],
+  },
 };
 
 const SOURCES = Object.keys(SOURCE_CONFIGS) as Source[];
@@ -165,6 +183,46 @@ function parseSourceId(source: Source, raw: string): SourceId | null {
 
 
 
+function canonicalDoi(raw: string): string | null {
+  let s = raw.trim();
+
+  s = s.replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "");
+  s = s.replace(/^doi:\s*/i, "");
+
+  try {
+    s = decodeURIComponent(s);
+  } catch {
+    return null;
+  }
+
+  s = s.trim();
+
+  // Common copy/paste punctuation after a DOI.
+  s = s.replace(/[.,;]+$/g, "");
+
+  // Common prose case: "(https://doi.org/10.x/foo)."
+  if (s.endsWith(")") && !s.includes("(")) {
+    s = s.slice(0, -1);
+  }
+
+  if (!/^10\.\d{4,9}\/\S+$/i.test(s)) return null;
+
+  return s.toLowerCase();
+}
+
+function sourceIdFromKnownDoi(doi: string): SourceId | null {
+  let m = doi.match(/^10\.48550\/arxiv\.(\d{4}\.\d{4,5})(?:v\d+)?$/i);
+  if (m) return { source: "arxiv", id: m[1] };
+
+  m = doi.match(/^10\.2139\/ssrn\.(\d+)$/i);
+  if (m) return { source: "ssrn", id: m[1] };
+
+  return null;
+}
+
+function doiChatPath(id: string): string {
+  return `/chat/doi/${id}`;
+}
 
 type DiscussionPost = {
   uri: string;
@@ -201,7 +259,9 @@ type MetadataProvider =
   | "datacite"
   | "openalex"
   | "arxiv"
-  | "crossref";
+  | "crossref"
+  | "doi-composite";
+
 
 type PaperMetadata = {
   title: string | null;
@@ -223,6 +283,17 @@ type PaperMetadata = {
   cached?: boolean;
   rateLimited?: boolean;
   notFound?: boolean;
+};
+
+type PartialDoiMetadata = {
+  provider: MetadataProvider;
+  title?: string | null;
+  abstract?: string | null;
+  authors?: string[];
+  year?: number;
+  doi?: string;
+  homeUrl?: string;
+  openalexId?: string;
 };
 
 
@@ -735,6 +806,39 @@ function parseRoute(request: Request): Route | null {
   const url = new URL(request.url);
   const path = url.pathname;
 
+
+  if (request.method === "GET") {
+    let m = path.match(/^\/chat\/doi\/(.+)$/);
+    if (m) {
+      const doi = canonicalDoi(m[1]);
+      if (!doi) return null;
+
+      return {
+        kind: "chat",
+        source: "doi",
+        id: doi,
+        format: url.searchParams.get("format") === "json" ? "json" : "html",
+      };
+    }
+
+    m = path.match(/^\/at\/doi\/(.+)$/);
+    if (m) {
+      const doi = canonicalDoi(m[1]);
+      if (!doi) return null;
+
+      return {
+        kind: "at",
+        source: "doi",
+        id: doi,
+      };
+    }
+  }
+
+  if (request.method === "GET" && path === "/open") {
+    const q = url.searchParams.get("q") ?? "";
+    return { kind: "open", q };
+  }
+  
   for (const source of SOURCES) {
     const cfg = sourceConfig(source);
 
@@ -774,10 +878,66 @@ type RequestContext = {
 
 
 function canonicalRedirect(request: Request): Response | null {
-  if (request.method !== "GET") return null;
+  if (request.method !== "GET" && request.method !== "HEAD") return null;
+
 
   const url = new URL(request.url);
 
+  {
+    let m = url.pathname.match(/^\/chat\/doi\/(.+)$/);
+    if (m) {
+      const doi = canonicalDoi(m[1]);
+      if (!doi) return null;
+
+      const known = sourceIdFromKnownDoi(doi);
+      if (known) {
+        url.pathname = `/chat/${known.source}/${known.id}`;
+        return new Response(null, {
+          status: 302,
+          headers: { Location: url.toString() },
+        });
+      }
+
+      const canonicalPath = doiChatPath(doi);
+      if (url.pathname !== canonicalPath) {
+        url.pathname = canonicalPath;
+        return new Response(null, {
+          status: 302,
+          headers: { Location: url.toString() },
+        });
+      }
+
+      return null;
+    }
+
+    m = url.pathname.match(/^\/at\/doi\/(.+)$/);
+    if (m) {
+      const doi = canonicalDoi(m[1]);
+      if (!doi) return null;
+
+      const known = sourceIdFromKnownDoi(doi);
+      if (known) {
+        url.pathname = `/at/${known.source}/${known.id}`;
+        return new Response(null, {
+          status: 302,
+          headers: { Location: url.toString() },
+        });
+      }
+
+      const canonicalPath = `/at/doi/${doi}`;
+      if (url.pathname !== canonicalPath) {
+        url.pathname = canonicalPath;
+        return new Response(null, {
+          status: 302,
+          headers: { Location: url.toString() },
+        });
+      }
+
+      return null;
+    }
+  }
+
+  
   for (const source of SOURCES) {
     const cfg = sourceConfig(source);
 
@@ -928,6 +1088,8 @@ export default {
 
     
     switch (route.kind) {
+    case "open":
+      return handleOpen(route);
     case "at":
       return handleAt(agent,route);
       
@@ -941,7 +1103,62 @@ export default {
 };
 
 
+function chatPathForInput(raw: string): string | null {
+  let s = raw.trim();
 
+  if (!s) return null;
+
+  // arXiv URL
+  let m = s.match(/^https?:\/\/(?:www\.)?arxiv\.org\/abs\/([^?#\s]+)(?:[?#].*)?$/i);
+  if (m) {
+    const sid = parseSourceId("arxiv", m[1]);
+    return sid ? `/chat/arxiv/${sid.id}` : null;
+  }
+
+  // arXiv PDF URL
+  m = s.match(/^https?:\/\/(?:www\.)?arxiv\.org\/pdf\/([^?#\s]+?)(?:\.pdf)?(?:[?#].*)?$/i);
+  if (m) {
+    const sid = parseSourceId("arxiv", m[1]);
+    return sid ? `/chat/arxiv/${sid.id}` : null;
+  }
+
+  // bare arXiv ID
+  const arxiv = parseSourceId("arxiv", s);
+  if (arxiv) {
+    return `/chat/arxiv/${arxiv.id}`;
+  }
+
+  // DOI / DOI URL
+  const doi = canonicalDoi(s);
+  if (doi) {
+    const known = sourceIdFromKnownDoi(doi);
+    if (known) return `/chat/${known.source}/${known.id}`;
+
+    return doiChatPath(doi);
+  }
+
+  return null;
+}
+
+function handleOpen(route: Extract<Route, { kind: "open" }>): Response {
+  const path = chatPathForInput(route.q);
+
+  if (!path) {
+    return html(renderUnavailablePage({
+      title: "Could not recognize paper identifier",
+      message:
+        "PubChat could not recognize that input. Enter an arXiv ID, arXiv URL, DOI, or DOI URL.",
+      id: route.q,
+    }), 400);
+  }
+
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: path,
+    },
+  });
+}
 
 
 async function handleAt(
@@ -966,9 +1183,31 @@ async function handleChat(
   agent: AtpAgent,
   route: Extract<Route, { kind: "chat" }>,
 ): Promise<Response> {
-  // 1. First check arXiv.
-  const metadata = await fetchMetadata(env,route.source, route.id);
 
+  
+
+  let metadata: PaperMetadata;
+
+  try {
+    metadata = await fetchMetadata(env, route.source, route.id);
+  } catch (err: any) {
+    if (route.source === "doi" || route.source === "ssrn") {
+      const missing =
+	    err instanceof MetadataMissingError
+            ? err.missing.join(", ")
+            : "title, authors, year, or abstract";
+
+      return html(renderUnavailablePage({
+	title: "Paper metadata is unavailable",
+	message:
+        `PubChat cannot create a discussion page for this ${route.source.toUpperCase()} paper because supported public metadata APIs did not provide the required metadata: ${missing}. PubChat currently requires title, authors, year, and abstract before creating a discussion page.`,
+	id: route.id,
+      }), 422);
+    }
+
+    throw err;
+  }
+  
   if (ctx.simulate === "rateLimited") {
     (metadata as any).rateLimited = true;
   }
@@ -1030,7 +1269,7 @@ async function handleChat(
     return html(renderUnavailablePage({
       title: "arXiv is rate limiting requests",
       message: "PubChat could not create or display this page because arXiv temporarily rejected the metadata request.",
-      arxivId: route.id,
+      id: route.id,
     }), 429);
   }
 
@@ -1038,7 +1277,7 @@ async function handleChat(
     return html(renderUnavailablePage({
       title: "arXiv paper not found",
       message: "PubChat could not find this arXiv paper.",
-      arxivId: route.id,
+      id: route.id,
     }), 404);
   }
 
@@ -1148,6 +1387,8 @@ async function resolveMetadata(
 
 
 
+
+
 function doiFor(source: Source, id: string): string | undefined {
   return sourceConfig(source).doi?.(id);
 }
@@ -1160,6 +1401,270 @@ function pdfUrlFor(source: Source, id: string): string | undefined {
   return sourceConfig(source).pdfUrl?.(id);
 }
 
+async function fetchCompositeDoiMetadata(
+  env: Env,
+  id: string,
+): Promise<PaperMetadata> {
+  const doi = canonicalDoi(id);
+  if (!doi) throw new Error(`Invalid DOI: ${id}`);
+
+  const fetchers: Array<() => Promise<PartialDoiMetadata>> = [
+    () => fetchCrossrefDoiPartial(env, doi),
+    () => fetchOpenAlexDoiPartial(env, doi),
+    () => fetchDataCiteDoiPartial(env, doi),
+  ];
+
+  const parts: PartialDoiMetadata[] = [];
+
+  for (const fetcher of fetchers) {
+    try {
+      parts.push(await fetcher());
+    } catch (err: any) {
+      const status =
+	    err?.status ??
+	    err?.response?.status ??
+	    err?.cause?.status;
+
+      const message = String(err?.message ?? "");
+
+      if (status === 404 || /404/.test(message)) {
+	console.log("[doi] metadata provider not found", {
+          doi,
+          message,
+	});
+      } else {
+	console.log("[doi] metadata provider failed", {
+          doi,
+          err,
+	});
+      }
+    }
+  }
+  
+  
+  const title =
+    first(parts.map(p => cleanString(p.title))) ?? null;
+
+  const abstract =
+    first(parts.map(p => cleanAbstract(p.abstract))) ?? null;
+
+  const authors =
+    first(parts.map(p => p.authors?.filter(Boolean)).filter(a => a && a.length > 0) as string[][]) ?? [];
+
+  const year =
+    first(parts.map(p => p.year).filter((y): y is number => Number.isFinite(y)));
+
+  const openalexId =
+    first(parts.map(p => cleanString(p.openalexId)));
+
+  const missing: string[] = [];
+  if (!title) missing.push("title");
+  if (authors.length === 0) missing.push("authors");
+  if (!Number.isFinite(year)) missing.push("year");
+  if (!abstract) missing.push("abstract");
+
+  if (missing.length > 0) {
+    throw new MetadataMissingError(
+      `DOI metadata missing: ${missing.join(", ")}`,
+      missing,
+    );
+  }
+
+  return {
+    title,
+    abstract,
+    authors,
+    year: year!,
+    source: "doi",
+    sourceId: doi,
+    homeUrl: `https://doi.org/${doi}`,
+    doi,
+    openalexId,
+    metadataProvider: "doi-composite",
+  };
+}
+
+function first<T>(xs: Array<T | null | undefined>): T | undefined {
+  return xs.find((x): x is T => x !== null && x !== undefined);
+}
+
+function cleanString(x: unknown): string | null {
+  if (typeof x !== "string") return null;
+  const s = x.replace(/\s+/g, " ").trim();
+  return s || null;
+}
+
+function cleanAbstract(x: unknown): string | null {
+  if (typeof x !== "string") return null;
+
+  const s = x
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return s || null;
+}
+
+class MetadataMissingError extends Error {
+  constructor(
+    message: string,
+    public missing: string[],
+  ) {
+    super(message);
+    this.name = "MetadataMissingError";
+  }
+}
+
+async function fetchCrossrefDoiPartial(
+  env: Env,
+  doi: string,
+): Promise<PartialDoiMetadata> {
+  const res = await fetch(
+    `https://api.crossref.org/works/${encodeURIComponent(doi)}`,
+    {
+      headers: {
+        "user-agent": pubchatUserAgent(env),
+        accept: "application/json",
+      },
+    },
+  );
+
+  if (!res.ok) throw new Error(`Crossref request failed: ${res.status}`);
+
+  const data = await res.json<any>();
+  const m = data.message;
+
+  const authors =
+    m.author
+      ?.map((a: any) =>
+        [a.given, a.family].filter(Boolean).join(" ") || a.name
+      )
+      .filter(Boolean) ?? [];
+
+  const year =
+    m.published?.["date-parts"]?.[0]?.[0] ??
+    m.published_print?.["date-parts"]?.[0]?.[0] ??
+    m.published_online?.["date-parts"]?.[0]?.[0] ??
+    m.created?.["date-parts"]?.[0]?.[0];
+
+  return {
+    provider: "crossref",
+    title: m.title?.[0] ?? null,
+    abstract: m.abstract ?? null,
+    authors,
+    year,
+    doi: m.DOI ?? doi,
+    homeUrl: m.URL,
+  };
+}
+
+async function fetchOpenAlexDoiPartial(
+  env: Env,
+  doi: string,
+): Promise<PartialDoiMetadata> {
+  const res = await fetch(
+    `https://api.openalex.org/works/https://doi.org/${encodeURIComponent(doi)}`,
+    {
+      headers: {
+        "user-agent": pubchatUserAgent(env),
+        accept: "application/json",
+      },
+    },
+  );
+
+  if (!res.ok) throw new Error(`OpenAlex request failed: ${res.status}`);
+
+  const work = await res.json<any>();
+
+  const authors =
+    work.authorships
+      ?.map((a: any) => a.author?.display_name)
+      .filter(Boolean) ?? [];
+
+  return {
+    provider: "openalex",
+    title: work.title ?? null,
+    abstract: reconstructOpenAlexAbstract(work.abstract_inverted_index),
+    authors,
+    year: work.publication_year,
+    doi: work.doi?.replace(/^https:\/\/doi.org\//i, "") ?? doi,
+    homeUrl: work.primary_location?.landing_page_url ?? work.id,
+    openalexId: work.id,
+  };
+}
+
+async function fetchSemanticScholarDoiPartial(
+  env: Env,
+  doi: string,
+): Promise<PartialDoiMetadata> {
+  const res = await fetch(
+    `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(doi)}?fields=title,abstract,year,authors,url,externalIds`,
+    {
+      headers: {
+        "user-agent": pubchatUserAgent(env),
+        accept: "application/json",
+      },
+    },
+  );
+
+  if (!res.ok) throw new Error(`Semantic Scholar request failed: ${res.status}`);
+
+  const paper = await res.json<any>();
+
+  return {
+    provider: "semanticscholar",
+    title: paper.title ?? null,
+    abstract: paper.abstract ?? null,
+    authors: paper.authors?.map((a: any) => a.name).filter(Boolean) ?? [],
+    year: paper.year,
+    doi: paper.externalIds?.DOI ?? doi,
+    homeUrl: paper.url,
+  };
+}
+
+async function fetchDataCiteDoiPartial(
+  env: Env,
+  doi: string,
+): Promise<PartialDoiMetadata> {
+  const res = await fetch(
+    `https://api.datacite.org/dois/${encodeURIComponent(doi)}`,
+    {
+      headers: {
+        "user-agent": pubchatUserAgent(env),
+        accept: "application/vnd.api+json",
+      },
+    },
+  );
+
+  if (!res.ok) throw new Error(`DataCite request failed: ${res.status}`);
+
+  const data = await res.json<any>();
+  const a = data.data?.attributes;
+  if (!a) throw new Error("DataCite response missing attributes");
+
+  const authors =
+    a.creators
+      ?.map((c: any) => {
+        if (c.givenName || c.familyName) {
+          return [c.givenName, c.familyName].filter(Boolean).join(" ");
+        }
+        return c.name;
+      })
+      .filter(Boolean) ?? [];
+
+  return {
+    provider: "datacite",
+    title: a.titles?.[0]?.title ?? null,
+    abstract:
+      a.descriptions
+        ?.find((d: any) => d.descriptionType === "Abstract")
+        ?.description ?? null,
+    authors,
+    year: a.publicationYear,
+    doi: a.doi ?? doi,
+    homeUrl: a.url,
+  };
+}
 
 async function fetchDataciteMetadata(
   source: Source,
@@ -1504,17 +2009,21 @@ function parsePubChatPaperUrl(raw: string): SourceId | null {
 
   if (url.hostname !== "pubchat.org") return null;
 
-  const m = url.pathname.match(
-    /^\/chat\/arxiv\/(\d{4}\.\d{4,5})(?:v\d+)?\/?$/
-  );
+  let m = url.pathname.match(/^\/chat\/arxiv\/(\d{4}\.\d{4,5})(?:v\d+)?\/?$/);
+  if (m) return { source: "arxiv", id: m[1] };
 
-  if (!m) return null;
+  m = url.pathname.match(/^\/chat\/ssrn\/(\d+)\/?$/);
+  if (m) return { source: "ssrn", id: m[1] };
 
-  return {
-    source: "arxiv",
-    id: m[1],
-  };
+  m = url.pathname.match(/^\/chat\/doi\/(.+)$/);
+  if (m) {
+    const doi = canonicalDoi(m[1]);
+    return doi ? { source: "doi", id: doi } : null;
+  }
+
+  return null;
 }
+
 
 function paperKey(source: Source, id: string): string {
   return `${source}:${id}`;
@@ -1994,7 +2503,7 @@ async function renderDebugPapers(agent: AtpAgent): Promise<Response> {
 function renderUnavailablePage(args: {
   title: string;
   message: string;
-  arxivId: string;
+  id: string;
 }): string {
   return `<!doctype html>
 <html>
@@ -2035,10 +2544,11 @@ function renderUnavailablePage(args: {
     <h1>${escapeHtml(args.title)}</h1>
     <p>${escapeHtml(args.message)}</p>
     <p>
-      arXiv:
-      <a href="https://arxiv.org/abs/${escapeAttr(args.arxivId)}" target="_blank" rel="noopener">
-        ${escapeHtml(args.arxivId)}
-      </a>
+      ${
+        args.id
+          ? `<p><code>${escapeHtml(args.id)}</code></p>`
+          : ""
+      }
     </p>
   </main>
 </body>

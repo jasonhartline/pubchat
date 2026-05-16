@@ -166,14 +166,16 @@
         <span>PubChat</span>
       </div>
 
-      <form id="pubchat-form">
-        <input
-          id="pubchat-input"
-          type="text"
-          placeholder="Enter an arXiv ID or URL like 2601.22079 or https://arxiv.org/abs/2601.22079"
-          autocomplete="off"
-          autofocus
-        >
+      <form id="pubchat-form" action="/open" method="get">
+	<input
+	  id="pubchat-input"
+	  name="q"
+	  type="text"
+	  placeholder="Enter an arXiv ID, arXiv URL, DOI, or DOI URL"
+	  autocomplete="off"
+	  autofocus
+	  required
+	  >
 
         <div class="button-row">
           <button type="submit">Open</button>
@@ -182,34 +184,6 @@
       </form>
     </div>
   </main>
-
-
-  <script>
-  function parseArxivInput(raw) {
-    const s = raw.trim();
-
-    const urlMatch = s.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})(?:v\d+)?/i);
-    if (urlMatch) return urlMatch[1];
-
-    const idMatch = s.match(/^(\d{4}\.\d{4,5})(?:v\d+)?$/);
-    if (idMatch) return idMatch[1];
-
-    return null;
-  }
-
-  document.getElementById("pubchat-form").addEventListener("submit", event => {
-    event.preventDefault();
-
-    const id = parseArxivInput(document.getElementById("pubchat-input").value);
-
-    if (!id) {
-      alert("Please enter a valid arXiv ID or arXiv URL.");
-      return;
-    }
-
-    window.location.href = `/chat/arxiv/${id}`;
-  });
-  </script>
   
 </body>
 </html>
