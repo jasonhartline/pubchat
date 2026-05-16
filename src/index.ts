@@ -17,6 +17,38 @@ const METADATA_CACHE_VERSION = 2;
 const POST_TEMPLATE =
       "“{{title}}” ({{year}})\nby {{authors}}\n\nCC: PubChat";
 
+
+const STAT_ICONS: Record<"reply" | "repost" | "quote" | "like", string> = {
+  reply: `<svg class="stat-icon" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M10 8L5 12l5 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M6 12h7c3.5 0 6 2 7 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`,
+
+  repost: `<svg class="stat-icon" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M7 7h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M13 4l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M17 17H9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M11 14l-3 3 3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`,
+
+  quote: `<svg class="stat-icon" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M8.5 10.5c0-2.2 1.1-3.9 3.1-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M6 10.5c0-1.1.9-2 2-2h1v3.5A2.5 2.5 0 0 1 6.5 14H6v-3.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    <path d="M16.5 10.5c0-2.2 1.1-3.9 3.1-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M14 10.5c0-1.1.9-2 2-2h1v3.5a2.5 2.5 0 0 1-2.5 2H14v-3.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+  </svg>`,
+
+  like: `<svg class="stat-icon" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M12 20.5s-6.8-4.4-8.9-8c-1.4-2.4-.6-5.5 2.3-6.6 2.1-.8 4.2 0 5.6 1.8 1.4-1.8 3.5-2.6 5.6-1.8 2.9 1.1 3.7 4.2 2.3 6.6-2.1 3.6-8.9 8-8.9 8Z"
+      fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+  </svg>`,
+};
+
+
+
+
+
+
 function fillTemplate(template: string, data: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_, key) => data[key] ?? "");
 }
@@ -153,6 +185,12 @@ type DiscussionPost = {
   imported?: boolean;
   importSourceUrl?: string;
   importedByHandle?: string;
+
+  replyCount?: number;
+  repostCount?: number;
+  likeCount?: number;
+  quoteCount?: number;
+  bookmarkCount?: number;
 };
 
 
@@ -233,6 +271,12 @@ async function fetchDiscussionThread(
       isRoot: depth === 0,
       avatar: post.author?.avatar,
       hasReplies: replies.length > 0,
+
+      replyCount: post.replyCount,
+      repostCount: post.repostCount,
+      likeCount: post.likeCount,
+      quoteCount: post.quoteCount,
+      bookmarkCount: post.bookmarkCount,
     });
 
 
@@ -2067,7 +2111,7 @@ function renderPostEmbed(embed: any): string {
   <div class="embed">
         ${
           e.thumb
-            ? `<img src="${escapeAttr(e.thumb)}" style="max-width: 240px;">`
+            ? `<img src="${escapeAttr(e.thumb)}">`
             : ""
         }
         <p><a href="${escapeAttr(e.uri)}" target="_blank" rel="noopener">${escapeHtml(e.title ?? e.uri)}</a></p>
@@ -2078,12 +2122,11 @@ function renderPostEmbed(embed: any): string {
 
   if (embed.$type === "app.bsky.embed.images#view") {
     return `
-      <div style="margin-top: 8px;">
+      <div class="image-embed">
         ${embed.images.map((img: any) => `
           <img src="${escapeAttr(img.fullsize ?? img.thumb)}"
-               alt="${escapeAttr(img.alt ?? "")}"
-               style="max-width: 240px; margin-right: 8px; margin-bottom: 8px;">
-        `).join("")}
+            alt="${escapeAttr(img.alt ?? "")}">
+          `).join("")}
       </div>
     `;
   }
@@ -2123,6 +2166,29 @@ function threadLineWidth(level: number): number {
   const marginWidth = 72;
   return (marginX(level + 1) - marginX(level)) * marginWidth;
 }
+
+function renderPostStats(post: DiscussionPost): string {
+  const items: { kind: "reply" | "repost" | "quote" | "like"; count?: number }[] = [
+    { kind: "reply", count: post.replyCount },
+    { kind: "repost", count: post.repostCount },
+    { kind: "quote", count: post.quoteCount },
+    { kind: "like", count: post.likeCount },
+  ].filter(item => typeof item.count === "number" && item.count > 0);
+
+  if (items.length === 0) return "";
+
+  return `
+    <div class="post-stats" aria-label="Post stats">
+      ${items.map(item => `
+        <span class="post-stat" title="${escapeAttr(item.kind)}s">
+          ${STAT_ICONS[item.kind]}
+          <span>${item.count}</span>
+        </span>
+      `).join("")}
+    </div>
+  `;
+}
+
 
 function blueskyReplyLink(url: string, text = "Reply on Bluesky"): string {
   return `
@@ -2357,8 +2423,9 @@ main {
   .post-body {
     flex: 1;
     min-width: 0;
-    padding: 12px 0;
+    padding: 12px 12px 12px 0;
   }
+
 
   .post-meta {
     color: #536471;
@@ -2398,25 +2465,69 @@ main {
     text-decoration: underline;
   }
 
-  .embed {
-    border: 1px solid #cfd9e3;
-    border-radius: 12px;
-    padding: 10px;
-    margin-top: 8px;
-    max-width: 100%;
-    overflow: hidden;
-  }
+.post-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 4px 0 8px 0;
+  color: #536471;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.post-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stat-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  display: block;
+}
+
+
+.embed {
+  border: 1px solid #cfd9e3;
+  border-radius: 12px;
+  padding: 10px;
+  margin: 8px 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.embed img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
 
 .embed img,
-.post-body img,
-.post-body svg {
+.image-embed img {
   max-width: 100%;
 }
 
 
-  .embed img {
-    border-radius: 8px;
-  }
+.image-embed {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0;
+  width: 100%;
+}
+
+.image-embed img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+}
+
+
+
 
 .debug {
   margin: 12px 0;
@@ -2683,7 +2794,9 @@ ${
 
       ${renderPostEmbed(post.embed)}
 
-      ${blueskyReplyLink(post.blueskyUrl)}
+      ${renderPostStats(post)}
+  
+  ${blueskyReplyLink(post.blueskyUrl,"Reply/Repost/Like on Bluesky")} 
     </div>
 
   </div>
