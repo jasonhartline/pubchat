@@ -131,7 +131,7 @@ const SOURCE_CONFIGS: Record<Source, SourceConfig> = {
     },
     metadataResolvers: [
       (env, id) => fetchDataciteMetadata("arxiv", env, id),
-      fetchArxivMetadata,
+      (_env, id) => fetchArxivMetadata(id),
     ],
   },
 
@@ -1248,7 +1248,7 @@ async function handleChat(
       sourceId: route.id,
       anchor: {
         uri: anchor.uri,
-        cid: anchor.cid,
+        cid: anchorPost.cid,
       },
       anchorPost,
       metadata: fallbackMetadata,
@@ -1304,7 +1304,7 @@ async function handleChat(
     sourceId: route.id,
     anchor: {
       uri: anchor.uri,
-      cid: anchor.cid,
+      cid: anchorPost.cid,
     },
     anchorPost,
     metadata,
@@ -1843,6 +1843,7 @@ async function fetchArxivMetadata(
       title: null,
       abstract: null,
       authors: [],
+      year: 0,
       source: "arxiv",
       sourceId: id,
       homeUrl,
@@ -1857,6 +1858,7 @@ async function fetchArxivMetadata(
       title: null,
       abstract: null,
       authors: [],
+      year: 0,
       source: "arxiv",
       sourceId: id,
       homeUrl,
@@ -1874,6 +1876,7 @@ async function fetchArxivMetadata(
       title: null,
       abstract: null,
       authors: [],
+      year: 0,
       source: "arxiv",
       sourceId: id,
       homeUrl,
@@ -2678,12 +2681,14 @@ function threadLineWidth(level: number): number {
 }
 
 function renderPostStats(post: DiscussionPost): string {
-  const items: { kind: "reply" | "repost" | "quote" | "like"; count?: number }[] = [
+  const stats: { kind: "reply" | "repost" | "quote" | "like"; count?: number }[] = [
     { kind: "reply", count: post.replyCount },
     { kind: "repost", count: post.repostCount },
     { kind: "quote", count: post.quoteCount },
     { kind: "like", count: post.likeCount },
-  ].filter(item => typeof item.count === "number" && item.count > 0);
+  ];
+
+  const items = stats.filter(item => typeof item.count === "number" && item.count > 0);
 
   if (items.length === 0) return "";
 
@@ -2730,7 +2735,7 @@ function renderChatPage(data: {
   metadata: Awaited<ReturnType<typeof fetchMetadata>>;
   thread: DiscussionPost[];
   warning?: string;
-  debug?: any;
+  _debug?: any;
 }): string {
   const title = data.metadata.title ?? `${data.source}:${data.sourceId}`;
   const authors = data.metadata.authors ?? [];
