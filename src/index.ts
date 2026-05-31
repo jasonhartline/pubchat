@@ -293,6 +293,7 @@ type PartialDoiMetadata = {
   year?: number;
   doi?: string;
   homeUrl?: string;
+  pdfUrl?: string;
   openalexId?: string;
 };
 
@@ -1457,6 +1458,9 @@ async function fetchCompositeDoiMetadata(
   const openalexId =
     first(parts.map(p => cleanString(p.openalexId)));
 
+  const pdfUrl =
+    first(parts.map(p => cleanString(p.pdfUrl)));
+
   const missing: string[] = [];
   if (!title) missing.push("title");
   if (authors.length === 0) missing.push("authors");
@@ -1478,6 +1482,7 @@ async function fetchCompositeDoiMetadata(
     source: "doi",
     sourceId: doi,
     homeUrl: `https://doi.org/${doi}`,
+    pdfUrl,
     doi,
     openalexId,
     metadataProvider: "doi-composite",
@@ -1589,6 +1594,7 @@ async function fetchOpenAlexDoiPartial(
     year: work.publication_year,
     doi: work.doi?.replace(/^https:\/\/doi.org\//i, "") ?? doi,
     homeUrl: work.primary_location?.landing_page_url ?? work.id,
+    pdfUrl: work.primary_location?.pdf_url ?? undefined,
     openalexId: work.id,
   };
 }
@@ -2615,6 +2621,76 @@ function renderArxivAbstract(abstract: string | null | undefined): string {
     .replace(/\n+/g, "\n<br>");
 }
 
+function paperHomeLinkLabel(source: Source): string {
+  switch (source) {
+  case "arxiv":
+    return "arXiv";
+  case "ssrn":
+    return "SSRN";
+  case "doi":
+    return "DOI";
+  }
+}
+
+const PAPER_LINK_ICONS: Record<"source" | "pdf", string> = {
+  source: `
+    <svg class="paper-link-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+      <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+    </svg>
+  `,
+  pdf: `
+    <svg class="paper-link-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+      <path d="M16 13H8" />
+      <path d="M16 17H8" />
+      <path d="M10 9H8" />
+    </svg>
+  `,
+};
+
+function renderPaperLinks(
+  metadata: PaperMetadata,
+  discussionUrl?: string,
+): string {
+  const links: Array<{ href: string; icon: string; label: string }> = [];
+
+  if (metadata.homeUrl) {
+    links.push({
+      href: metadata.homeUrl,
+      icon: PAPER_LINK_ICONS.source,
+      label: paperHomeLinkLabel(metadata.source),
+    });
+  }
+
+  if (metadata.pdfUrl && metadata.pdfUrl !== metadata.homeUrl) {
+    links.push({
+      href: metadata.pdfUrl,
+      icon: PAPER_LINK_ICONS.pdf,
+      label: "PDF",
+    });
+  }
+
+  if (links.length === 0 && !discussionUrl) return "";
+
+  return `
+    <p class="paper-links">
+      ${links.map(link => `
+        <a href="${escapeAttr(link.href)}" target="_blank" rel="noopener">
+          ${link.icon}
+          <span>${escapeHtml(link.label)}</span>
+        </a>
+      `).join("")}
+      ${
+        discussionUrl
+          ? blueskyReplyLink(discussionUrl, "Start a new discussion on Bluesky")
+          : ""
+      }
+    </p>
+  `;
+}
+
 function renderPostEmbed(embed: any): string {
   if (!embed) return "";
 
@@ -2852,6 +2928,38 @@ main {
 .abstract {
   margin: 8px 0;
   line-height: 1.45;
+}
+
+.paper-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 14px 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.paper-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.paper-links a:hover {
+  text-decoration: underline;
+}
+
+.paper-link-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .descriptor {
@@ -3221,13 +3329,7 @@ ${
     : ""
 }
 
-${
-  data.metadata.homeUrl
-    ? `<p><a href="${escapeAttr(data.metadata.homeUrl)}"><tt>${escapeHtml(data.metadata.homeUrl)}</tt></a></p>`
-    : ""
-}
-
-      ${blueskyReplyLink(data.anchorPost.blueskyUrl,"Start a new discussion on Bluesky")}
+${renderPaperLinks(data.metadata, data.anchorPost.blueskyUrl)}
 
 
 
