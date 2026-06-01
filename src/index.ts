@@ -298,6 +298,10 @@ type PartialDoiMetadata = {
 };
 
 const REQUIRED_METADATA_FIELDS = ["title", "authors", "year", "abstract"];
+const BLUESKY_THREAD_FETCH_DEPTH = 100;
+const MAX_THREAD_CONTINUATION_FETCHES = 100;
+const THREAD_MARGIN_WIDTH = 72;
+const MIN_THREAD_LINE_WIDTH = 1;
 
 
 function blueskyUrlForPost(post: any): string {
@@ -311,25 +315,73 @@ async function fetchDiscussionThread(
   agent: AtpAgent,
   rootUri: string,
 ): Promise<DiscussionPost[]> {
-  const res = await agent.app.bsky.feed.getPostThread({
-    uri: rootUri,
-    depth: 100,
-    parentHeight: 0,
-  });
+  async function fetchThread(uri: string) {
+    return agent.app.bsky.feed.getPostThread({
+      uri,
+      depth: BLUESKY_THREAD_FETCH_DEPTH,
+      parentHeight: 0,
+    });
+  }
 
-  const out: DiscussionPost[] = [];
-
-  function walk(node: any, depth: number) {
-    if (!node || node.$type !== "app.bsky.feed.defs#threadViewPost") return;
-
-    const post = node.post;
-    const record = post.record as any;
-
-    const replies = [...(node.replies ?? [])].sort((a: any, b: any) => {
+  function sortedReplies(node: any): any[] {
+    return [...(node.replies ?? [])].sort((a: any, b: any) => {
       const at = a.post?.record?.createdAt ?? "";
       const bt = b.post?.record?.createdAt ?? "";
       return at.localeCompare(bt);
     });
+  }
+
+  const res = await fetchThread(rootUri);
+
+  const out: DiscussionPost[] = [];
+  const seenPostUris = new Set<string>();
+  const continuedFromUris = new Set<string>();
+  let continuationFetches = 0;
+
+  async function continuationReplies(postUri: string): Promise<any[]> {
+    if (
+      continuedFromUris.has(postUri) ||
+      continuationFetches >= MAX_THREAD_CONTINUATION_FETCHES
+    ) {
+      return [];
+    }
+
+    continuedFromUris.add(postUri);
+    continuationFetches++;
+
+    try {
+      const continuation = await fetchThread(postUri);
+      const thread = continuation.data.thread as any;
+
+      if (
+        !thread ||
+        thread.$type !== "app.bsky.feed.defs#threadViewPost" ||
+        thread.post?.uri !== postUri
+      ) {
+        return [];
+      }
+
+      return sortedReplies(thread);
+    } catch (err) {
+      console.log("Could not fetch Bluesky thread continuation", postUri, err);
+      return [];
+    }
+  }
+
+  async function walk(node: any, depth: number) {
+    if (!node || node.$type !== "app.bsky.feed.defs#threadViewPost") return;
+
+    const post = node.post;
+    if (seenPostUris.has(post.uri)) return;
+    seenPostUris.add(post.uri);
+
+    const record = post.record as any;
+
+    let replies = sortedReplies(node);
+
+    if (replies.length === 0 && Number(post.replyCount ?? 0) > 0) {
+      replies = await continuationReplies(post.uri);
+    }
     
     out.push({
       uri: post.uri,
@@ -356,12 +408,12 @@ async function fetchDiscussionThread(
 
 
     for (const reply of replies) {
-      walk(reply, depth + 1);
+      await walk(reply, depth + 1);
     }
 
   }
 
-  walk(res.data.thread, 0);
+  await walk(res.data.thread, 0);
   return out;
 }
 
@@ -2683,13 +2735,12 @@ function marginX(level: number): number {
 
 
 function threadAvatarLeft(level: number): number {
-  const marginWidth = 72;
-  return marginX(level) * marginWidth;
+  return marginX(level) * THREAD_MARGIN_WIDTH;
 }
 
 function threadLineWidth(level: number): number {
-  const marginWidth = 72;
-  return (marginX(level + 1) - marginX(level)) * marginWidth;
+  const width = (marginX(level + 1) - marginX(level)) * THREAD_MARGIN_WIDTH;
+  return Math.max(width, MIN_THREAD_LINE_WIDTH);
 }
 
 function renderPostStats(post: DiscussionPost): string {
