@@ -297,6 +297,8 @@ type PartialDoiMetadata = {
   openalexId?: string;
 };
 
+const REQUIRED_METADATA_FIELDS = ["title", "authors", "year", "abstract"];
+
 
 function blueskyUrlForPost(post: any): string {
   const rkey = extractRkeyFromUri(post.uri);
@@ -1193,16 +1195,18 @@ async function handleChat(
     metadata = await fetchMetadata(env, route.source, route.id);
   } catch (err: any) {
     if (route.source === "doi" || route.source === "ssrn") {
-      const missing =
-	    err instanceof MetadataMissingError
-            ? err.missing.join(", ")
-            : "title, authors, year, or abstract";
+      const missingFields =
+        err instanceof MetadataMissingError
+          ? err.missing
+          : undefined;
 
       return html(renderUnavailablePage({
 	title: "Paper metadata is unavailable",
 	message:
-        `PubChat cannot create a discussion page for this ${route.source.toUpperCase()} paper because supported public metadata APIs did not provide the required metadata: ${missing}. PubChat currently requires title, authors, year, and abstract before creating a discussion page.`,
+        `PubChat cannot create a discussion page for this ${route.source.toUpperCase()} paper because supported public metadata APIs did not provide all required metadata.`,
 	id: route.id,
+        missingFields,
+        requiredFields: REQUIRED_METADATA_FIELDS,
       }), 422);
     }
 
@@ -1700,12 +1704,8 @@ async function fetchDataciteMetadata(
   if (!a) throw new Error("DataCite response missing attributes");
 
   const title = a.titles?.[0]?.title;
-  if (!title) throw new Error("DataCite metadata missing title");
 
   const year = a.publicationYear;
-  if (!Number.isFinite(year)) {
-    throw new Error("DataCite metadata missing publication year");
-  }
 
   const authors =
     a.creators
@@ -1717,21 +1717,26 @@ async function fetchDataciteMetadata(
       })
       .filter(Boolean) ?? [];
 
-  if (authors.length === 0) {
-    throw new Error("DataCite metadata missing authors");
-  }
-
   const abstract =
     a.descriptions
       ?.find((d: any) => d.descriptionType === "Abstract")
       ?.description ?? null;
 
-  if (!abstract) {
-    throw new Error("DataCite metadata missing abstract");
+  const missing: string[] = [];
+  if (!title) missing.push("title");
+  if (authors.length === 0) missing.push("authors");
+  if (!Number.isFinite(year)) missing.push("year");
+  if (!abstract) missing.push("abstract");
+
+  if (missing.length > 0) {
+    throw new MetadataMissingError(
+      `DataCite metadata missing: ${missing.join(", ")}`,
+      missing,
+    );
   }
 
   return {
-    title,
+    title: title!,
     abstract,
     authors,
     year,
@@ -2513,7 +2518,12 @@ function renderUnavailablePage(args: {
   title: string;
   message: string;
   id: string;
+  missingFields?: string[];
+  requiredFields?: string[];
 }): string {
+  const missingFields = args.missingFields ?? [];
+  const requiredFields = args.requiredFields ?? [];
+
   return `<!doctype html>
 <html>
 <head>
@@ -2522,46 +2532,176 @@ function renderUnavailablePage(args: {
   <title>${escapeHtml(args.title)} — PubChat</title>
   <link rel="icon" href="/static/favicon.png" sizes="32x32" type="image/png">
   <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      -webkit-text-size-adjust: 100%;
+    }
+
     body {
       margin: 0;
+      overflow-x: hidden;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       background: #f3f7fb;
       color: #0f1419;
     }
 
     main {
-      max-width: 680px;
-      margin: 40px auto;
-      padding: 20px;
+      width: 100%;
+      max-width: 684px;
+      min-height: 100vh;
+      margin: 0 auto;
       background: white;
-      border: 1px solid #dbe3ec;
-      border-radius: 12px;
+      border-left: 1px solid #dbe3ec;
+      border-right: 1px solid #dbe3ec;
+      display: flex;
+      flex-direction: column;
     }
 
     a {
-      color: #0a7cff;
+      color: #8b6fe8;
       text-decoration: none;
     }
 
     a:hover {
       text-decoration: underline;
     }
+
+    .site-header {
+      border-bottom: 1px solid #dbe3ec;
+      padding: 10px 20px;
+    }
+
+    .site-brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #0f1419;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .site-brand img {
+      width: 16px;
+      height: 16px;
+      display: block;
+    }
+
+    .unavailable {
+      flex: 1;
+      padding: 20px;
+      border-bottom: 1px solid #dbe3ec;
+    }
+
+    .unavailable h1 {
+      margin: 0 0 10px 0;
+      font-size: 28px;
+      line-height: 1.2;
+    }
+
+    .unavailable p {
+      margin: 8px 0;
+      line-height: 1.45;
+    }
+
+    h2 {
+      margin: 20px 0 8px 0;
+      font-size: 16px;
+    }
+
+    ul {
+      margin: 8px 0;
+      padding-left: 22px;
+    }
+
+    li {
+      margin: 4px 0;
+    }
+
+    code {
+      overflow-wrap: anywhere;
+    }
+
+    .site-footer {
+      border-top: 1px solid #dbe3ec;
+      padding: 14px 20px;
+      font-size: 13px;
+      color: #536471;
+    }
+
+    @media (max-width: 700px) {
+      main {
+        max-width: none;
+        border-left: 0;
+        border-right: 0;
+      }
+
+      .site-header,
+      .unavailable,
+      .site-footer {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+
+      .unavailable h1 {
+        font-size: 23px;
+      }
+    }
   </style>
 </head>
 <body>
   <main>
-    <h1>${escapeHtml(args.title)}</h1>
-    <p>${escapeHtml(args.message)}</p>
-    <p>
+    <header class="site-header">
+      <a href="/" class="site-brand">
+        <img src="/static/favicon.png" alt="">
+        <span>PubChat</span>
+      </a>
+    </header>
+    <section class="unavailable">
+      <h1>${escapeHtml(args.title)}</h1>
+      <p>${escapeHtml(args.message)}</p>
       ${
-        args.id
-          ? `<p><code>${escapeHtml(args.id)}</code></p>`
+        missingFields.length > 0
+          ? `
+            <h2>Missing metadata</h2>
+            <ul>
+              ${missingFields.map(field => `<li>${escapeHtml(metadataFieldLabel(field))}</li>`).join("")}
+            </ul>
+          `
+          : `
+            <p>PubChat could not determine exactly which required field was missing from the provider response.</p>
+          `
+      }
+      ${
+        requiredFields.length > 0
+          ? `
+            <h2>Required metadata</h2>
+            <p>${requiredFields.map(metadataFieldLabel).map(escapeHtml).join(", ")}</p>
+          `
           : ""
       }
-    </p>
+      ${
+        args.id
+          ? `
+            <h2>Paper identifier</h2>
+            <p><code>${escapeHtml(args.id)}</code></p>
+          `
+          : ""
+      }
+    </section>
+    <footer class="site-footer">
+      PubChat attaches Bluesky discussions to academic papers. Reply on Bluesky to join the discussion. <a href="/static/guide.html">[help]</a>
+    </footer>
   </main>
 </body>
 </html>`;
+}
+
+function metadataFieldLabel(field: string): string {
+  return field === "year" ? "publication year" : field;
 }
 
 function renderPostText(text: string, facets: any[]): string {
