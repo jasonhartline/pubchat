@@ -2390,96 +2390,11 @@ async function renderDebugPapers(agent: AtpAgent): Promise<Response> {
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Debug papers</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      margin: 24px;
-      color: #0f1419;
-      background: #f3f7fb;
-    }
-
-    a {
-      color: #8b6fe8;
-      text-decoration: none;
-    }
-
-    a:hover {
-      text-decoration: underline;
-    }
-
-    .paper-group {
-      background: white;
-      border: 1px solid #dbe3ec;
-      border-radius: 12px;
-      padding: 16px;
-      margin-bottom: 20px;
-    }
-
-    h1 {
-      margin-top: 0;
-    }
-
-    h2 {
-      margin: 0 0 8px 0;
-    }
-
-    .counts {
-      color: #536471;
-      font-size: 14px;
-      font-weight: 400;
-      margin-left: 8px;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      table-layout: fixed;
-    }
-
-    th,
-    td {
-      border-top: 1px solid #dbe3ec;
-      padding: 8px;
-      text-align: left;
-      vertical-align: top;
-      font-size: 13px;
-      overflow-wrap: anywhere;
-    }
-
-    th {
-      color: #536471;
-      font-weight: 600;
-    }
-
-    tr.connected {
-      background: rgba(139, 111, 232, 0.12);
-    }
-
-    tr.extra {
-      background: #fff8e5;
-    }
-
-    .muted {
-      color: #536471;
-    }
-
-    .post-text {
-      white-space: pre-wrap;
-      margin-bottom: 4px;
-    }
-
-    code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-      font-size: 12px;
-    }
-
-    button {
-      cursor: pointer;
-    }
-  </style>
+  <link rel="stylesheet" href="/static/pubchat.css">
 </head>
-<body>
+<body class="debug-page">
   <h1>Debug papers</h1>
 
   <p>
@@ -2492,11 +2407,11 @@ async function renderDebugPapers(agent: AtpAgent): Promise<Response> {
 
   ${orphanHtml}
 
-  <dialog id="recordDialog" style="max-width: 900px; width: 90%;">
-    <form method="dialog" style="text-align: right;">
+  <dialog class="record-dialog" id="recordDialog">
+    <form class="record-dialog-form" method="dialog">
       <button>close</button>
     </form>
-    <pre id="recordJson" style="white-space: pre-wrap; overflow:auto;"></pre>
+    <pre class="record-json" id="recordJson"></pre>
   </dialog>
 
   <script>
@@ -2531,129 +2446,10 @@ function renderUnavailablePage(args: {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(args.title)} — PubChat</title>
   <link rel="icon" href="/static/favicon.png" sizes="32x32" type="image/png">
-  <style>
-    * {
-      box-sizing: border-box;
-    }
-
-    html {
-      -webkit-text-size-adjust: 100%;
-    }
-
-    body {
-      margin: 0;
-      overflow-x: hidden;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: #f3f7fb;
-      color: #0f1419;
-    }
-
-    main {
-      width: 100%;
-      max-width: 684px;
-      min-height: 100vh;
-      margin: 0 auto;
-      background: white;
-      border-left: 1px solid #dbe3ec;
-      border-right: 1px solid #dbe3ec;
-      display: flex;
-      flex-direction: column;
-    }
-
-    a {
-      color: #8b6fe8;
-      text-decoration: none;
-    }
-
-    a:hover {
-      text-decoration: underline;
-    }
-
-    .site-header {
-      border-bottom: 1px solid #dbe3ec;
-      padding: 10px 20px;
-    }
-
-    .site-brand {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      color: #0f1419;
-      text-decoration: none;
-      font-size: 14px;
-      font-weight: 600;
-    }
-
-    .site-brand img {
-      width: 16px;
-      height: 16px;
-      display: block;
-    }
-
-    .unavailable {
-      flex: 1;
-      padding: 20px;
-      border-bottom: 1px solid #dbe3ec;
-    }
-
-    .unavailable h1 {
-      margin: 0 0 10px 0;
-      font-size: 28px;
-      line-height: 1.2;
-    }
-
-    .unavailable p {
-      margin: 8px 0;
-      line-height: 1.45;
-    }
-
-    h2 {
-      margin: 20px 0 8px 0;
-      font-size: 16px;
-    }
-
-    ul {
-      margin: 8px 0;
-      padding-left: 22px;
-    }
-
-    li {
-      margin: 4px 0;
-    }
-
-    code {
-      overflow-wrap: anywhere;
-    }
-
-    .site-footer {
-      border-top: 1px solid #dbe3ec;
-      padding: 14px 20px;
-      font-size: 13px;
-      color: #536471;
-    }
-
-    @media (max-width: 700px) {
-      main {
-        max-width: none;
-        border-left: 0;
-        border-right: 0;
-      }
-
-      .site-header,
-      .unavailable,
-      .site-footer {
-        padding-left: 16px;
-        padding-right: 16px;
-      }
-
-      .unavailable h1 {
-        font-size: 23px;
-      }
-    }
-  </style>
+  <link rel="stylesheet" href="/static/pubchat.css">
 </head>
-<body>
-  <main>
+<body class="unavailable-page">
+  <main class="page-shell stacked-page">
     <header class="site-header">
       <a href="/" class="site-brand">
         <img src="/static/favicon.png" alt="">
@@ -2998,426 +2794,7 @@ function renderChatPage(data: {
   <meta name="twitter:title" content="${escapeAttr(displayTitle)}">
   <meta name="twitter:description" content="${escapeAttr(description)}">
   <meta name="twitter:image" content="${escapeAttr(image)}">
-
-
-<style>
-
-  :root {
-    --accent: #8b6fe8;
-    --accent-soft: rgba(139, 111, 232, 0.18);
-  }
-
-  * {
-    box-sizing: border-box;
-  }
-
-  html {
-    -webkit-text-size-adjust: 100%;
-  }
-
-  body {
-    margin: 0;
-    overflow-x: hidden;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: #f3f7fb;
-    color: #0f1419;
-  }
-
-
-main {
-  width: 100%;
-  max-width: 684px;
-  margin: 0 auto;
-  background: white;
-  min-height: 100vh;
-  border-left: 1px solid #dbe3ec;
-  border-right: 1px solid #dbe3ec;
-
-  display: flex;
-  flex-direction: column;
-}
-
-.discussion {
-  flex: 1;
-}
-
-.warning {
-  padding: 10px 12px;
-  border: 1px solid #f0c36d;
-  border-radius: 8px;
-  background: #fff8e5;
-  color: #5f4b00;
-}
-
-  .paper {
-    padding: 20px;
-    border-bottom: 1px solid #dbe3ec;
-  }
-
-  .paper h1 {
-    margin: 0 0 8px 0;
-    font-size: 28px;
-    line-height: 1.2;
-  }
-
-  .paper p {
-    margin: 8px 0;
-    line-height: 1.45;
-  }
-
-.abstract {
-  margin: 8px 0;
-  line-height: 1.45;
-}
-
-.paper-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin: 10px 0 14px 0;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.paper-links a {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--accent);
-  text-decoration: none;
-}
-
-.paper-links a:hover {
-  text-decoration: underline;
-}
-
-.paper-link-icon {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.descriptor {
-  font-weight: 700;
-  margin-right: 4px;
-}
-
-  .reply-box {
-    padding: 14px 20px;
-
-  }
-
-  .reply-box a {
-    color: var(--accent);
-    text-decoration: none;
-    font-size: 14px;
-  }
-
-  .reply-box a:hover {
-    text-decoration: underline;
-  }
-
-  .section-header {
-    padding: 16px 20px;
-    margin: 0;
-    border-bottom: 1px solid #dbe3ec;
-    font-size: 20px;
-    font-weight: 600;
-  }
-
-  .post {
-    border-bottom: 1px solid #dbe3ec;
-  }
-
-  .post-row {
-    display: flex;
-    gap: 12px;
-    position: relative;
-    align-items: stretch;
-  }
-
-  .thread-margin {
-    position: relative;
-    width: 72px;
-    flex-shrink: 0;
-  }
-
-.avatar-wrap {
-  position: absolute;
-  top: 0;
-  width: 40px;
-  height: 40px;
-  transform: translateX(-50%);
-  z-index: 1;
-  flex: 0 0 40px;
-}
-
-.avatar,
-.avatar-placeholder {
-  width: 40px;
-  height: 40px;
-  min-width: 40px;
-  max-width: none;
-  flex: 0 0 40px;
-  border-radius: 50%;
-  background: white;
-}
-
-.avatar {
-  object-fit: cover;
-  display: block;
-  aspect-ratio: 1 / 1;
-}
-
-  .branch-svg {
-    position: absolute;
-    top: 8px;
-    height: calc(100% - 16px);
-    overflow: visible;
-    pointer-events: none;
-    z-index: 0;
-  }
-
-  .post-body {
-    flex: 1;
-    min-width: 0;
-    padding: 12px 12px 12px 0;
-  }
-
-
-  .post-meta {
-    color: #536471;
-    font-size: 14px;
-    line-height: 1.35;
-  }
-
-  .post-author {
-    font-weight: 700;
-    color: #0f1419;
-  }
-
-  .post-meta a {
-    color: #536471;
-    text-decoration: none;
-  }
-
-  .post-meta a:hover {
-    text-decoration: underline;
-  }
-
-  .post-text {
-    white-space: pre-wrap;
-    font-size: 15px;
-    line-height: 1.45;
-    margin: 6px 0 8px 0;
-    overflow-wrap: anywhere;
-  }
-
-  .post-actions a {
-    color: var(--accent);
-    text-decoration: none;
-    font-size: 14px;
-  }
-
-  .post-actions a:hover {
-    text-decoration: underline;
-  }
-
-.post-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin: 4px 0 8px 0;
-  color: #536471;
-  font-size: 13px;
-  line-height: 1;
-}
-
-.post-stat {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.stat-icon {
-  width: 15px;
-  height: 15px;
-  flex: 0 0 15px;
-  display: block;
-}
-
-
-.embed {
-  border: 1px solid #cfd9e3;
-  border-radius: 12px;
-  padding: 10px;
-  margin: 8px 0;
-  width: 100%;
-  max-width: 100%;
-  overflow: hidden;
-}
-
-.embed img {
-  display: block;
-  width: 100%;
-  height: auto;
-  border-radius: 8px;
-}
-
-.embed img,
-.image-embed img {
-  max-width: 100%;
-}
-
-
-.image-embed {
-  display: grid;
-  gap: 8px;
-  margin: 8px 0;
-  width: 100%;
-}
-
-.image-embed img {
-  display: block;
-  width: 100%;
-  height: auto;
-  border-radius: 12px;
-}
-
-
-
-
-.debug {
-  margin: 12px 0;
-  padding: 10px;
-  background: #fff8e5;
-  color: #5f4b00;
-  border: 1px solid #d0d7de;
-  border-radius: 8px;
-  font-size: 12px;
-  overflow-x: auto;
-}
-
-.reply-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--accent);
-  text-decoration: none;
-}
-
-.reply-link:hover {
-  text-decoration: underline;
-}
-
-.bluesky-icon {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-}
-
-.site-header {
-  border-bottom: 1px solid #dbe3ec;
-  padding: 10px 20px;
-}
-
-.site-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: #0f1419;
-  text-decoration: none;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.site-brand img {
-  width: 16px;
-  height: 16px;
-  display: block;
-}
-
-.site-footer {
-  border-top: 1px solid #dbe3ec;
-  padding: 14px 20px;
-  font-size: 13px;
-  color: #536471;
-}
-
-  .imported-post {
-    background: #f7f8fa;
-    box-shadow: inset 3px 0 0 var(--accent-soft);
-  }
-
-  .imported-post .avatar,
-  .imported-post .avatar-placeholder {
-    background: #f7f8fa;
-  }
-
-  .import-note {
-    margin: 2px 0 6px 0;
-    color: #536471;
-    font-size: 13px;
-    line-height: 1.35;
-  }
-
-  .import-note a {
-    color: var(--accent);
-    text-decoration: none;
-  }
-
-  .import-note a:hover {
-    text-decoration: underline;
-  }
-
-  @media (max-width: 700px) {
-    main {
-      max-width: none;
-      min-height: 100vh;
-      border-left: 0;
-      border-right: 0;
-    }
-
-    .paper {
-      padding: 16px;
-    }
-
-    .paper h1 {
-      font-size: 23px;
-      line-height: 1.2;
-    }
-
-
-
-    .reply-box,
-    .section-header {
-      padding-left: 14px;
-      padding-right: 14px;
-    }
-
-    .post-row {
-      gap: 10px;
-    }
-
-    .thread-margin {
-      width: 72px;
-    }
-
-    .post-meta {
-      font-size: 13px;
-    }
-
-    .post-text {
-      font-size: 15px;
-      line-height: 1.4;
-    }
-  }
-</style>
+  <link rel="stylesheet" href="/static/pubchat.css">
 
 <script>
   window.MathJax = {
@@ -3434,8 +2811,8 @@ main {
 <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
 
 </head>
-<body>
-<main>
+<body class="chat-page">
+<main class="page-shell stacked-page">
 <header class="site-header">
   <a href="/" class="site-brand">
     <img src="/static/favicon.png" alt="">
@@ -3476,9 +2853,9 @@ ${renderPaperLinks(data.metadata, data.anchorPost.blueskyUrl)}
 </section>
 
 
-<section class=discussion>
+<section class="discussion">
 
-<h2 style="padding: 16px 20px; margin: 0; border-bottom: 1px solid #dbe3ec;">
+<h2 class="section-header">
   Bluesky Discussion
 </h2>
 
@@ -3624,12 +3001,14 @@ async function renderDebugList(
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Debug ${escapeHtml(label)}</title>
+  <link rel="stylesheet" href="/static/pubchat.css">
 </head>
-<body>
+<body class="debug-page">
   <h1>${escapeHtml(label)}</h1>
 
-  <table border="1" cellpadding="6" cellspacing="0">
+  <table>
     <tr>
       <th>rkey</th>
       <th>source</th>
@@ -3641,11 +3020,11 @@ async function renderDebugList(
     ${rows}
   </table>
 
-  <dialog id="recordDialog" style="max-width: 900px; width: 90%;">
-    <form method="dialog" style="text-align: right;">
+  <dialog class="record-dialog" id="recordDialog">
+    <form class="record-dialog-form" method="dialog">
       <button>close</button>
     </form>
-    <pre id="recordJson" style="white-space: pre-wrap; overflow:auto;"></pre>
+    <pre class="record-json" id="recordJson"></pre>
   </dialog>
 
   <script>
