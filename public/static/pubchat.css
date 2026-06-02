@@ -519,24 +519,77 @@ body.guide-page {
 
 .embed {
   border: 1px solid var(--embed-border);
-  border-radius: 12px;
-  padding: 10px;
+  border-radius: 16px;
   margin: 8px 0;
   width: 100%;
   max-width: 100%;
   overflow: hidden;
 }
 
-.embed img {
+.external-embed {
+  display: block;
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.external-embed:hover {
+  text-decoration: none;
+}
+
+.external-embed-thumb {
   display: block;
   width: 100%;
   height: auto;
-  border-radius: 8px;
+  max-width: 100%;
+  border-bottom: 1px solid var(--embed-border);
 }
 
-.embed img,
-.image-embed img {
-  max-width: 100%;
+.external-embed-body {
+  display: block;
+  padding: 14px 16px;
+}
+
+.external-embed-title {
+  display: block;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.external-embed-description {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.external-embed-source {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.external-embed-source-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .image-embed {

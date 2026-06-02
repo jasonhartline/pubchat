@@ -2679,21 +2679,44 @@ function renderPaperLinks(
   `;
 }
 
-function renderPostEmbed(embed: any): string {
+export function renderPostEmbed(embed: any): string {
   if (!embed) return "";
 
   if (embed.$type === "app.bsky.embed.external#view") {
     const e = embed.external;
+    const uri = nonBlankString(e?.uri);
+    if (!uri) return "";
+
+    const title = nonBlankString(e?.title) ?? uri;
+    const description = nonBlankString(e?.description);
+    const thumb = nonBlankString(e?.thumb);
+    const sourceHost = externalEmbedHost(uri);
+
     return `
-  <div class="embed">
+  <a class="embed external-embed" href="${escapeAttr(uri)}" target="_blank" rel="noopener">
         ${
-          e.thumb
-            ? `<img src="${escapeAttr(e.thumb)}">`
+          thumb
+            ? `<img class="external-embed-thumb" src="${escapeAttr(thumb)}" alt="">`
             : ""
         }
-        <p><a href="${escapeAttr(e.uri)}" target="_blank" rel="noopener">${escapeHtml(e.title ?? e.uri)}</a></p>
-        ${e.description ? `<p>${escapeHtml(e.description)}</p>` : ""}
-    </div>
+        <span class="external-embed-body">
+          <span class="external-embed-title">${escapeHtml(title)}</span>
+          ${description ? `<span class="external-embed-description">${escapeHtml(description)}</span>` : ""}
+          ${
+            sourceHost
+              ? `<span class="external-embed-source">
+                  <svg class="external-embed-source-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M3 12h18" />
+                    <path d="M12 3c2.2 2.4 3.4 5.4 3.4 9S14.2 18.6 12 21" />
+                    <path d="M12 3c-2.2 2.4-3.4 5.4-3.4 9s1.2 6.6 3.4 9" />
+                  </svg>
+                  <span>${escapeHtml(sourceHost)}</span>
+                </span>`
+              : ""
+          }
+        </span>
+    </a>
     `;
   }
 
@@ -2713,6 +2736,21 @@ function renderPostEmbed(embed: any): string {
   }
 
   return "";
+}
+
+function nonBlankString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function externalEmbedHost(uri: string): string | null {
+  try {
+    const host = new URL(uri).hostname.replace(/^www\./i, "");
+    return nonBlankString(host);
+  } catch {
+    return null;
+  }
 }
 
 function renderImportedBy(post: DiscussionPost): string {
