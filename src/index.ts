@@ -7,13 +7,15 @@ export interface Env {
   ASSETS: Fetcher;
   ENVIRONMENT: string; // "dev" or undefined
   API_CONTACT_EMAIL?: string;
+  OPENALEX_API_KEY?: string;
 
   ANCHOR_GATE: DurableObjectNamespace;
 }
 
 const ANCHOR_COLLECTION = "org.pubchat.anchor";
 const POST_COLLECTION = "app.bsky.feed.post";
-const METADATA_CACHE_VERSION = 2;
+const METADATA_CACHE_VERSION = 4;
+const METADATA_CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const POST_TEMPLATE =
       "“{{title}}” ({{year}})\nby {{authors}}\n\nCC: PubChat";
 
@@ -255,13 +257,26 @@ type DiscussionPost = {
 
 
 type MetadataProvider =
-  | "semanticscholar"
   | "datacite"
   | "openalex"
   | "arxiv"
   | "crossref"
+  | "unpaywall"
   | "doi-composite";
 
+
+export type DoiPartialProvider = "crossref" | "datacite" | "openalex" | "unpaywall";
+export type DoiMatchMethod = "exact-doi" | "location-doi";
+export type PdfKind = "publisher" | "oa" | "repository" | "unknown";
+export type PdfVersion = "published" | "accepted" | "submitted" | "unknown";
+export type PdfCandidate = {
+  url: string;
+  provider: DoiPartialProvider;
+  kind: PdfKind;
+  matchedBy?: DoiMatchMethod;
+  version?: PdfVersion;
+  verifiedPdf?: boolean;
+};
 
 type PaperMetadata = {
   title: string | null;
@@ -285,19 +300,32 @@ type PaperMetadata = {
   notFound?: boolean;
 };
 
-type PartialDoiMetadata = {
-  provider: MetadataProvider;
+export type PartialDoiMetadata = {
+  provider: DoiPartialProvider;
+  matchedBy?: DoiMatchMethod;
   title?: string | null;
   abstract?: string | null;
   authors?: string[];
   year?: number;
   doi?: string;
   homeUrl?: string;
-  pdfUrl?: string;
+  pdfCandidates?: PdfCandidate[];
   openalexId?: string;
 };
 
 const REQUIRED_METADATA_FIELDS = ["title", "authors", "year", "abstract"];
+const OPENALEX_WORK_SELECT = [
+  "id",
+  "doi",
+  "title",
+  "publication_year",
+  "abstract_inverted_index",
+  "authorships",
+  "primary_location",
+  "locations",
+  "best_oa_location",
+  "open_access",
+].join(",");
 const BLUESKY_THREAD_FETCH_DEPTH = 100;
 const MAX_THREAD_CONTINUATION_FETCHES = 100;
 const THREAD_MARGIN_WIDTH = 72;
@@ -666,6 +694,35 @@ async function getOrCreateAnchorPostViaGate(
   return await res.json();
 }
 
+async function blueskyPostExists(agent: AtpAgent, uri: string): Promise<boolean> {
+  try {
+    const res = await agent.app.bsky.feed.getPosts({ uris: [uri] });
+    return res.data.posts.some(post => post.uri === uri);
+  } catch (err) {
+    if (isBlueskyPostNotFoundError(err)) return false;
+    throw err;
+  }
+}
+
+function isBlueskyPostNotFoundError(err: unknown): boolean {
+  const e = err as any;
+  const status =
+    e?.status ??
+    e?.response?.status ??
+    e?.cause?.status;
+  const errorName =
+    e?.error ??
+    e?.response?.data?.error ??
+    e?.data?.error;
+  const message = String(e?.message ?? "");
+
+  return (
+    status === 404 ||
+    errorName === "NotFound" ||
+    /post not found/i.test(message)
+  );
+}
+
 
 
 async function getAnchorRecord(agent: AtpAgent, source: Source, id: string) {
@@ -799,6 +856,7 @@ async function createAnchorWithPost(
   rkey: string,
   uri: string,
   anchorPost: { uri: string; cid: string },
+  swapRecord: string | null,
 ) {
   const did = agent.session?.did;
 
@@ -815,13 +873,13 @@ async function createAnchorWithPost(
   };
 
   console.log("[create anchor] creating anchor",{rkey})
-  const created = await agent.com.atproto.repo.putRecord({
-  repo: did,
-  collection: ANCHOR_COLLECTION,
-  rkey,
-  record,
-  swapRecord: null as any,
-  });
+	  const created = await agent.com.atproto.repo.putRecord({
+	    repo: did,
+	    collection: ANCHOR_COLLECTION,
+	    rkey,
+	    record,
+	    swapRecord: swapRecord as any,
+	  });
   
 
   return {
@@ -1046,9 +1104,33 @@ export class AnchorGate {
       const existingAnchor = await getAnchorRecord(agent, source, id);
 
       if (existingAnchor.exists && existingAnchor.record.discussion) {
-        return json({
-          anchor: existingAnchor,
-          anchorPost: anchorPostFromAnchor(agent, existingAnchor),
+        const existingAnchorPost = anchorPostFromAnchor(agent, existingAnchor);
+
+        try {
+          if (await blueskyPostExists(agent, existingAnchorPost.uri)) {
+            return json({
+              anchor: existingAnchor,
+              anchorPost: existingAnchorPost,
+            });
+          }
+        } catch (err) {
+          console.log("[anchor] could not verify existing anchor post", {
+            source,
+            id,
+            uri: existingAnchorPost.uri,
+            err,
+          });
+
+          return json({
+            anchor: existingAnchor,
+            anchorPost: existingAnchorPost,
+          });
+        }
+
+        console.log("[anchor] replacing missing anchor post", {
+          source,
+          id,
+          uri: existingAnchorPost.uri,
         });
       }
 
@@ -1066,6 +1148,7 @@ export class AnchorGate {
         existingAnchor.rkey,
         existingAnchor.uri,
         anchorPost,
+        existingAnchor.exists ? existingAnchor.cid ?? null : null,
       );
 
       return json({
@@ -1338,23 +1421,38 @@ async function handleChat(
     }), 404);
   }
 
-  // 5. Normal path.
-  if (hasAnchorDiscussion) {
-    anchor = existingAnchor;
-    anchorPost = anchorPostFromAnchor(agent, anchor);
-  } else {
-    const resolved = await getOrCreateAnchorPostViaGate(
-      env,
-      route.source,
-      route.id,
-      metadata,
-    );
-    
-    anchor = resolved.anchor;
-    anchorPost = resolved.anchorPost;
-  }
+  // 5. Normal path. The gate owns the create/repair decision under its
+  // per-paper Durable Object mutex.
+  const resolved = await getOrCreateAnchorPostViaGate(
+    env,
+    route.source,
+    route.id,
+    metadata,
+  );
 
-  const thread = await fetchDiscussionThreadWithImports(agent, anchorPost.uri);
+  anchor = resolved.anchor;
+  anchorPost = resolved.anchorPost;
+
+  let thread: DiscussionPost[];
+  let warning: string | undefined;
+
+  try {
+    thread = await fetchDiscussionThreadWithImports(agent, anchorPost.uri);
+  } catch (err) {
+    if (!isBlueskyPostNotFoundError(err)) {
+      throw err;
+    }
+
+    console.log("[anchor] gate returned an anchor post that could not be loaded", {
+      source: route.source,
+      id: route.id,
+      uri: anchorPost.uri,
+    });
+
+    thread = [];
+    warning =
+      "The Bluesky discussion anchor could not be loaded. PubChat preserved the existing anchor and did not create another replacement.";
+  }
 
   const data = {
     source: route.source,
@@ -1366,6 +1464,7 @@ async function handleChat(
     anchorPost,
     metadata,
     thread,
+    warning,
   };
 
   if (ctx.debug) {
@@ -1412,7 +1511,7 @@ async function fetchMetadata(
       new Response(JSON.stringify(metadata), {
         headers: {
           "content-type": "application/json; charset=utf-8",
-          "cache-control": "public, max-age=86400",
+          "cache-control": `public, max-age=${METADATA_CACHE_MAX_AGE_SECONDS}`,
         },
       }),
     );
@@ -1465,17 +1564,21 @@ async function fetchCompositeDoiMetadata(
   const doi = canonicalDoi(id);
   if (!doi) throw new Error(`Invalid DOI: ${id}`);
 
-  const fetchers: Array<() => Promise<PartialDoiMetadata>> = [
-    () => fetchCrossrefDoiPartial(env, doi),
-    () => fetchOpenAlexDoiPartial(env, doi),
-    () => fetchDataCiteDoiPartial(env, doi),
+  const fetchers: Array<{
+    provider: DoiPartialProvider;
+    fetch: () => Promise<PartialDoiMetadata>;
+  }> = [
+    { provider: "crossref", fetch: () => fetchCrossrefDoiPartial(env, doi) },
+    { provider: "datacite", fetch: () => fetchDataCiteDoiPartial(env, doi) },
+    { provider: "openalex", fetch: () => fetchOpenAlexDoiPartial(env, doi) },
+    { provider: "unpaywall", fetch: () => fetchUnpaywallDoiPartial(env, doi) },
   ];
 
   const parts: PartialDoiMetadata[] = [];
 
   for (const fetcher of fetchers) {
     try {
-      parts.push(await fetcher());
+      parts.push(await fetcher.fetch());
     } catch (err: any) {
       const status =
 	    err?.status ??
@@ -1485,37 +1588,34 @@ async function fetchCompositeDoiMetadata(
       const message = String(err?.message ?? "");
 
       if (status === 404 || /404/.test(message)) {
-	console.log("[doi] metadata provider not found", {
+        console.log("[doi] metadata provider not found", {
           doi,
+          provider: fetcher.provider,
           message,
-	});
+        });
       } else {
-	console.log("[doi] metadata provider failed", {
+        console.log("[doi] metadata provider failed", {
           doi,
+          provider: fetcher.provider,
           err,
-	});
+        });
       }
     }
   }
   
   
-  const title =
-    first(parts.map(p => cleanString(p.title))) ?? null;
+  const title = selectDoiTitle(parts);
 
-  const abstract =
-    first(parts.map(p => cleanAbstract(p.abstract))) ?? null;
+  const abstract = selectDoiAbstract(parts);
 
-  const authors =
-    first(parts.map(p => p.authors?.filter(Boolean)).filter(a => a && a.length > 0) as string[][]) ?? [];
+  const authors = selectDoiAuthors(parts);
 
-  const year =
-    first(parts.map(p => p.year).filter((y): y is number => Number.isFinite(y)));
+  const year = selectDoiYear(parts);
 
   const openalexId =
     first(parts.map(p => cleanString(p.openalexId)));
 
-  const pdfUrl =
-    first(parts.map(p => cleanString(p.pdfUrl)));
+  const pdfUrl = selectPdfUrl(parts.flatMap(p => p.pdfCandidates ?? []));
 
   const missing: string[] = [];
   if (!title) missing.push("title");
@@ -1549,10 +1649,97 @@ function first<T>(xs: Array<T | null | undefined>): T | undefined {
   return xs.find((x): x is T => x !== null && x !== undefined);
 }
 
+const DOI_IDENTITY_PROVIDER_ORDER: DoiPartialProvider[] = [
+  "crossref",
+  "datacite",
+  "openalex",
+  "unpaywall",
+];
+
+const DOI_ABSTRACT_ORDER: Array<{
+  provider: DoiPartialProvider;
+  matchedBy?: DoiMatchMethod;
+}> = [
+  { provider: "crossref", matchedBy: "exact-doi" },
+  { provider: "datacite", matchedBy: "exact-doi" },
+  { provider: "openalex", matchedBy: "exact-doi" },
+  { provider: "openalex", matchedBy: "location-doi" },
+];
+
+function doiPartsByPreference(
+  parts: PartialDoiMetadata[],
+  providerOrder = DOI_IDENTITY_PROVIDER_ORDER,
+): PartialDoiMetadata[] {
+  return providerOrder.flatMap(provider =>
+    parts.filter(part => part.provider === provider)
+  );
+}
+
+export function selectDoiTitle(parts: PartialDoiMetadata[]): string | null {
+  return first(
+    doiPartsByPreference(parts).map(part => cleanTitle(part.title))
+  ) ?? null;
+}
+
+function selectDoiAuthors(parts: PartialDoiMetadata[]): string[] {
+  return first(
+    doiPartsByPreference(parts)
+      .map(part => part.authors?.filter(Boolean))
+      .filter((authors): authors is string[] => !!authors && authors.length > 0)
+  ) ?? [];
+}
+
+function selectDoiYear(parts: PartialDoiMetadata[]): number | undefined {
+  return first(
+    doiPartsByPreference(parts)
+      .map(part => part.year)
+      .filter((year): year is number => Number.isFinite(year))
+  );
+}
+
+export function selectDoiAbstract(parts: PartialDoiMetadata[]): string | null {
+  const ordered = [
+    ...DOI_ABSTRACT_ORDER.flatMap(({ provider, matchedBy }) =>
+      parts.filter(part =>
+        part.provider === provider &&
+        (!matchedBy || part.matchedBy === matchedBy)
+      )
+    ),
+    ...doiPartsByPreference(parts),
+  ];
+
+  return first(ordered.map(part => cleanAbstract(part.abstract))) ?? null;
+}
+
 function cleanString(x: unknown): string | null {
   if (typeof x !== "string") return null;
   const s = x.replace(/\s+/g, " ").trim();
   return s || null;
+}
+
+function cleanTitle(x: unknown): string | null {
+  if (typeof x !== "string") return null;
+
+  const s = stripHtmlTags(decodeCommonHtmlEntities(stripHtmlTags(x)))
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return s || null;
+}
+
+function stripHtmlTags(x: string): string {
+  return x.replace(/<[^>]+>/g, " ");
+}
+
+function decodeCommonHtmlEntities(x: string): string {
+  return x
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'");
 }
 
 function cleanAbstract(x: unknown): string | null {
@@ -1610,21 +1797,97 @@ async function fetchCrossrefDoiPartial(
 
   return {
     provider: "crossref",
-    title: m.title?.[0] ?? null,
+    matchedBy: "exact-doi",
+    title: cleanTitle(m.title?.[0]),
     abstract: m.abstract ?? null,
     authors,
     year,
     doi: m.DOI ?? doi,
     homeUrl: m.URL,
+    pdfCandidates: crossrefPdfCandidates(m),
   };
+}
+
+export function crossrefPdfCandidates(message: any): PdfCandidate[] {
+  const candidates: PdfCandidate[] = [];
+
+  for (const link of message?.link ?? []) {
+    const contentType = cleanString(link?.["content-type"])?.toLowerCase();
+    const url = cleanString(link?.URL ?? link?.url);
+
+    pushPdfCandidate(candidates, {
+      url: url ?? "",
+      provider: "crossref",
+      kind: "publisher",
+      matchedBy: "exact-doi",
+      version: crossrefPdfVersion(link?.["content-version"]),
+      verifiedPdf: contentType?.includes("pdf") ?? false,
+    });
+  }
+
+  return dedupePdfCandidates(candidates);
+}
+
+function crossrefPdfVersion(version: unknown): PdfVersion {
+  switch (cleanString(version)?.toLowerCase()) {
+    case "vor":
+    case "version of record":
+      return "published";
+    case "am":
+    case "accepted manuscript":
+      return "accepted";
+    default:
+      return "unknown";
+  }
 }
 
 async function fetchOpenAlexDoiPartial(
   env: Env,
   doi: string,
 ): Promise<PartialDoiMetadata> {
+  let work: any;
+  let matchedBy: DoiMatchMethod = "exact-doi";
+
+  try {
+    work = await fetchOpenAlexWorkByDoi(env, doi);
+  } catch (err: any) {
+    const status =
+      err?.status ??
+      err?.response?.status ??
+      err?.cause?.status;
+
+    if (status !== 404 && !/404/.test(String(err?.message ?? ""))) {
+      throw err;
+    }
+
+    work = await fetchOpenAlexWorkByLocationDoi(env, doi);
+    matchedBy = "location-doi";
+  }
+
+  return openAlexWorkToDoiPartial(work, doi, matchedBy);
+}
+
+function setOpenAlexQueryParams(url: URL, env: Env): void {
+  url.searchParams.set("select", OPENALEX_WORK_SELECT);
+
+  const email = cleanString(env.API_CONTACT_EMAIL);
+  if (email) {
+    url.searchParams.set("mailto", email);
+  }
+
+  const apiKey = cleanString(env.OPENALEX_API_KEY);
+  if (apiKey) {
+    url.searchParams.set("api_key", apiKey);
+  }
+}
+
+async function fetchOpenAlexWork(
+  env: Env,
+  url: string,
+  lookup: string,
+): Promise<any> {
   const res = await fetch(
-    `https://api.openalex.org/works/https://doi.org/${encodeURIComponent(doi)}`,
+    url,
     {
       headers: {
         "user-agent": pubchatUserAgent(env),
@@ -1633,9 +1896,67 @@ async function fetchOpenAlexDoiPartial(
     },
   );
 
-  if (!res.ok) throw new Error(`OpenAlex request failed: ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(`OpenAlex ${lookup} request failed: ${res.status}`);
+    (err as any).status = res.status;
+    throw err;
+  }
 
-  const work = await res.json<any>();
+  return await res.json<any>();
+}
+
+async function fetchOpenAlexWorkByDoi(
+  env: Env,
+  doi: string,
+): Promise<any> {
+  const url = new URL("https://api.openalex.org/works");
+  url.searchParams.set("filter", `doi:${doi}`);
+  url.searchParams.set("per-page", "1");
+  setOpenAlexQueryParams(url, env);
+
+  const data = await fetchOpenAlexWork(env, url.toString(), "DOI");
+  const results = Array.isArray(data.results) ? data.results : [];
+  const work = results.find((x: any) => openAlexWorkMatchesDoi(x, doi));
+
+  if (!work) {
+    const err = new Error("OpenAlex DOI request failed: 404");
+    (err as any).status = 404;
+    throw err;
+  }
+
+  return work;
+}
+
+async function fetchOpenAlexWorkByLocationDoi(
+  env: Env,
+  doi: string,
+): Promise<any> {
+  const url = new URL("https://api.openalex.org/works");
+  url.searchParams.set(
+    "filter",
+    `locations.landing_page_url:https://doi.org/${doi}`,
+  );
+  url.searchParams.set("per-page", "3");
+  setOpenAlexQueryParams(url, env);
+
+  const data = await fetchOpenAlexWork(env, url.toString(), "location DOI");
+  const results = Array.isArray(data.results) ? data.results : [];
+  const work = results.find((x: any) => openAlexWorkMatchesDoi(x, doi));
+
+  if (!work) {
+    const err = new Error("OpenAlex location DOI request failed: 404");
+    (err as any).status = 404;
+    throw err;
+  }
+
+  return work;
+}
+
+function openAlexWorkToDoiPartial(
+  work: any,
+  requestedDoi: string,
+  matchedBy: DoiMatchMethod,
+): PartialDoiMetadata {
 
   const authors =
     work.authorships
@@ -1644,44 +1965,101 @@ async function fetchOpenAlexDoiPartial(
 
   return {
     provider: "openalex",
-    title: work.title ?? null,
+    matchedBy,
+    title: cleanTitle(work.title),
     abstract: reconstructOpenAlexAbstract(work.abstract_inverted_index),
     authors,
     year: work.publication_year,
-    doi: work.doi?.replace(/^https:\/\/doi.org\//i, "") ?? doi,
-    homeUrl: work.primary_location?.landing_page_url ?? work.id,
-    pdfUrl: work.primary_location?.pdf_url ?? undefined,
+    doi: openAlexWorkMatchesDoi(work, requestedDoi)
+      ? requestedDoi
+      : canonicalDoi(work.doi ?? "") ?? requestedDoi,
+    homeUrl:
+      openAlexLandingPageForDoi(work, requestedDoi) ??
+      work.primary_location?.landing_page_url ??
+      work.id,
+    pdfCandidates: openAlexPdfCandidates(work, matchedBy),
     openalexId: work.id,
   };
 }
 
-async function fetchSemanticScholarDoiPartial(
-  env: Env,
-  doi: string,
-): Promise<PartialDoiMetadata> {
-  const res = await fetch(
-    `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(doi)}?fields=title,abstract,year,authors,url,externalIds`,
-    {
-      headers: {
-        "user-agent": pubchatUserAgent(env),
-        accept: "application/json",
-      },
-    },
+function openAlexWorkMatchesDoi(work: any, doi: string): boolean {
+  if (canonicalDoi(work?.doi ?? "") === doi) return true;
+
+  return (work?.locations ?? []).some((location: any) =>
+    openAlexLocationMatchesDoi(location, doi)
   );
+}
 
-  if (!res.ok) throw new Error(`Semantic Scholar request failed: ${res.status}`);
+function openAlexLocationMatchesDoi(location: any, doi: string): boolean {
+  return (
+    canonicalDoi(location?.id ?? "") === doi ||
+    canonicalDoi(location?.landing_page_url ?? "") === doi
+  );
+}
 
-  const paper = await res.json<any>();
+function openAlexLandingPageForDoi(work: any, doi: string): string | undefined {
+  return (work?.locations ?? [])
+    .find((location: any) => openAlexLocationMatchesDoi(location, doi))
+    ?.landing_page_url;
+}
 
-  return {
-    provider: "semanticscholar",
-    title: paper.title ?? null,
-    abstract: paper.abstract ?? null,
-    authors: paper.authors?.map((a: any) => a.name).filter(Boolean) ?? [],
-    year: paper.year,
-    doi: paper.externalIds?.DOI ?? doi,
-    homeUrl: paper.url,
-  };
+export function openAlexPdfCandidates(
+  work: any,
+  matchedBy: DoiMatchMethod = "exact-doi",
+): PdfCandidate[] {
+  const candidates: PdfCandidate[] = [];
+
+  pushOpenAlexLocationPdfCandidate(candidates, work?.primary_location, matchedBy);
+  pushOpenAlexLocationPdfCandidate(candidates, work?.best_oa_location, matchedBy);
+
+  const openAccessUrl = cleanString(work?.open_access?.oa_url);
+  if (openAccessUrl) {
+    pushPdfCandidate(candidates, {
+      url: openAccessUrl,
+      provider: "openalex",
+      kind: classifyPdfUrl(openAccessUrl, "oa"),
+      matchedBy,
+      version: "unknown",
+      verifiedPdf: false,
+    });
+  }
+
+  for (const location of work?.locations ?? []) {
+    pushOpenAlexLocationPdfCandidate(candidates, location, matchedBy);
+  }
+
+  return dedupePdfCandidates(candidates);
+}
+
+function pushOpenAlexLocationPdfCandidate(
+  candidates: PdfCandidate[],
+  location: any,
+  matchedBy: DoiMatchMethod,
+): void {
+  const url = cleanString(location?.pdf_url);
+  if (!url) return;
+
+  pushPdfCandidate(candidates, {
+    url,
+    provider: "openalex",
+    kind: classifyOpenAlexLocationPdf(location, url),
+    matchedBy,
+    version: "unknown",
+    verifiedPdf: true,
+  });
+}
+
+function classifyOpenAlexLocationPdf(location: any, url: string): PdfKind {
+  const sourceType = cleanString(location?.source?.type)?.toLowerCase();
+
+  if (isRepositoryPdfUrl(url) || sourceType === "repository") {
+    return "repository";
+  }
+
+  if (location?.is_oa) return "oa";
+  if (sourceType === "publisher") return "publisher";
+
+  return "unknown";
 }
 
 async function fetchDataCiteDoiPartial(
@@ -1716,7 +2094,8 @@ async function fetchDataCiteDoiPartial(
 
   return {
     provider: "datacite",
-    title: a.titles?.[0]?.title ?? null,
+    matchedBy: "exact-doi",
+    title: cleanTitle(a.titles?.[0]?.title),
     abstract:
       a.descriptions
         ?.find((d: any) => d.descriptionType === "Abstract")
@@ -1725,7 +2104,252 @@ async function fetchDataCiteDoiPartial(
     year: a.publicationYear,
     doi: a.doi ?? doi,
     homeUrl: a.url,
+    pdfCandidates: dataCitePdfCandidates(a),
   };
+}
+
+function dataCitePdfCandidates(attributes: any): PdfCandidate[] {
+  const candidates: PdfCandidate[] = [];
+  const urls = [
+    attributes?.contentUrl,
+    attributes?.url,
+  ].flat().filter(Boolean);
+
+  for (const url of urls) {
+    pushPdfCandidate(candidates, {
+      url,
+      provider: "datacite",
+      kind: classifyPdfUrl(String(url), "unknown"),
+      matchedBy: "exact-doi",
+      version: "unknown",
+      verifiedPdf: false,
+    });
+  }
+
+  return dedupePdfCandidates(candidates);
+}
+
+async function fetchUnpaywallDoiPartial(
+  env: Env,
+  doi: string,
+): Promise<PartialDoiMetadata> {
+  const email = cleanString(env.API_CONTACT_EMAIL);
+  if (!email) {
+    throw new Error("Unpaywall request skipped: API_CONTACT_EMAIL missing");
+  }
+
+  const url = new URL(`https://api.unpaywall.org/v2/${encodeURIComponent(doi)}`);
+  url.searchParams.set("email", email);
+
+  const res = await fetch(
+    url.toString(),
+    {
+      headers: {
+        "user-agent": pubchatUserAgent(env),
+        accept: "application/json",
+      },
+    },
+  );
+
+  if (!res.ok) {
+    const err = new Error(`Unpaywall request failed: ${res.status}`);
+    (err as any).status = res.status;
+    throw err;
+  }
+
+  const data = await res.json<any>();
+  const returnedDoi = canonicalDoi(data?.doi ?? "");
+
+  if (returnedDoi && returnedDoi !== doi) {
+    throw new Error(`Unpaywall DOI mismatch: ${returnedDoi}`);
+  }
+
+  return {
+    provider: "unpaywall",
+    matchedBy: "exact-doi",
+    doi: returnedDoi ?? doi,
+    homeUrl: data?.doi_url,
+    pdfCandidates: unpaywallPdfCandidates(data),
+  };
+}
+
+export function unpaywallPdfCandidates(data: any): PdfCandidate[] {
+  const candidates: PdfCandidate[] = [];
+  const locations = [
+    data?.best_oa_location,
+    ...(Array.isArray(data?.oa_locations) ? data.oa_locations : []),
+  ].filter(Boolean);
+
+  for (const location of locations) {
+    const url = cleanString(location?.url_for_pdf);
+    if (!url) continue;
+
+    pushPdfCandidate(candidates, {
+      url,
+      provider: "unpaywall",
+      kind: classifyUnpaywallLocationPdf(location, url),
+      matchedBy: "exact-doi",
+      version: unpaywallPdfVersion(location?.version),
+      verifiedPdf: true,
+    });
+  }
+
+  return dedupePdfCandidates(candidates);
+}
+
+function classifyUnpaywallLocationPdf(location: any, url: string): PdfKind {
+  const hostType = cleanString(location?.host_type)?.toLowerCase();
+
+  if (isRepositoryPdfUrl(url) || hostType === "repository") {
+    return "repository";
+  }
+
+  return "oa";
+}
+
+function unpaywallPdfVersion(version: unknown): PdfVersion {
+  switch (cleanString(version)?.toLowerCase()) {
+    case "publishedversion":
+      return "published";
+    case "acceptedversion":
+      return "accepted";
+    case "submittedversion":
+      return "submitted";
+    default:
+      return "unknown";
+  }
+}
+
+function pushPdfCandidate(
+  candidates: PdfCandidate[],
+  candidate: PdfCandidate,
+): void {
+  const url = cleanString(candidate.url);
+  if (!url || !isHttpUrl(url)) return;
+
+  if (!candidate.verifiedPdf && !looksLikePdfUrl(url)) return;
+
+  candidates.push({
+    ...candidate,
+    url,
+  });
+}
+
+function dedupePdfCandidates(candidates: PdfCandidate[]): PdfCandidate[] {
+  const byUrl = new Map<string, PdfCandidate>();
+
+  for (const candidate of candidates) {
+    const existing = byUrl.get(candidate.url);
+    if (!existing || pdfCandidateScore(candidate) > pdfCandidateScore(existing)) {
+      byUrl.set(candidate.url, candidate);
+    }
+  }
+
+  return Array.from(byUrl.values());
+}
+
+export function selectPdfUrl(candidates: PdfCandidate[]): string | undefined {
+  return dedupePdfCandidates(candidates)
+    .filter(candidate => candidate.verifiedPdf || looksLikePdfUrl(candidate.url))
+    .sort((a, b) => pdfCandidateScore(b) - pdfCandidateScore(a))[0]
+    ?.url;
+}
+
+function pdfCandidateScore(candidate: PdfCandidate): number {
+  let score = 0;
+
+  switch (candidate.kind) {
+    case "repository":
+      score += 90;
+      break;
+    case "oa":
+      score += 85;
+      break;
+    case "publisher":
+      score += 70;
+      break;
+    default:
+      score += 40;
+  }
+
+  switch (candidate.provider) {
+    case "unpaywall":
+      score += 20;
+      break;
+    case "openalex":
+      score += 15;
+      break;
+    case "crossref":
+      score += 10;
+      break;
+    case "datacite":
+      score += 5;
+      break;
+  }
+
+  switch (candidate.version) {
+    case "published":
+      score += 8;
+      break;
+    case "accepted":
+      score += 5;
+      break;
+    case "submitted":
+      score += 2;
+      break;
+  }
+
+  if (candidate.verifiedPdf) score += 5;
+  if (isArxivPdfUrl(candidate.url)) score += 5;
+
+  return score;
+}
+
+function classifyPdfUrl(url: string, fallback: PdfKind): PdfKind {
+  if (isRepositoryPdfUrl(url)) return "repository";
+  return fallback;
+}
+
+function isHttpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isRepositoryPdfUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+    return [
+      "arxiv.org",
+      "biorxiv.org",
+      "medrxiv.org",
+      "europepmc.org",
+      "pmc.ncbi.nlm.nih.gov",
+      "zenodo.org",
+      "osf.io",
+    ].some(repositoryHost =>
+      host === repositoryHost || host.endsWith(`.${repositoryHost}`)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isArxivPdfUrl(url: string): boolean {
+  try {
+    return (
+      new URL(url).hostname.replace(/^www\./, "").toLowerCase() === "arxiv.org"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function looksLikePdfUrl(url: string): boolean {
+  return /\.pdf(?:$|[?#])|\/pdf(?:$|[/?#])/i.test(url);
 }
 
 async function fetchDataciteMetadata(
@@ -1755,7 +2379,7 @@ async function fetchDataciteMetadata(
 
   if (!a) throw new Error("DataCite response missing attributes");
 
-  const title = a.titles?.[0]?.title;
+  const title = cleanTitle(a.titles?.[0]?.title);
 
   const year = a.publicationYear;
 
@@ -1788,7 +2412,7 @@ async function fetchDataciteMetadata(
   }
 
   return {
-    title: title!,
+    title,
     abstract,
     authors,
     year,
@@ -1983,7 +2607,7 @@ async function fetchArxivMetadata(
   
 
   return {
-    title: get("title"),
+    title: cleanTitle(get("title")),
     abstract: getSummary(),
     authors,
     year,
@@ -2036,7 +2660,7 @@ function normalizeOpenAlexWork(
   }
 
   return {
-    title: work.title ?? null,
+    title: cleanTitle(work.title),
     abstract: reconstructOpenAlexAbstract(work.abstract_inverted_index),
     authors,
     year,

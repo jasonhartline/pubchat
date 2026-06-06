@@ -9,6 +9,9 @@
     "directory": "./public",
     "binding": "ASSETS"
   },
+  "vars": {
+    "API_CONTACT_EMAIL": "jasonhartline+pubchat@gmail.com"
+  },
   "durable_objects": {
     "bindings": [
       {
