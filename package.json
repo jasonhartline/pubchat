@@ -6,6 +6,7 @@
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "start": "wrangler dev",
+    "perf:tail": "wrangler tail pubchat --format pretty --search \"[perf]\"",
     "test": "vitest",
     "cf-typegen": "wrangler types"
   },

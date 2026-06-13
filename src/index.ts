@@ -19,6 +19,8 @@ const METADATA_CACHE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const POST_TEMPLATE =
       "“{{title}}” ({{year}})\nby {{authors}}\n\nCC: PubChat";
 
+const SLOW_REQUEST_THRESHOLD_MS = 1500;
+
 
 const STAT_ICONS: Record<"reply" | "repost" | "quote" | "like", string> = {
   reply: `<svg class="stat-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -988,7 +990,150 @@ type RequestContext = {
   url: URL;
   simulate?: "rateLimited" | "notFound";
   debug?: boolean;
+  timing: RequestTiming;
 };
+
+type TimingEntry = {
+  name: string;
+  durationMs: number;
+};
+
+type RequestTiming = {
+  entries: TimingEntry[];
+};
+
+type RequestLogContext = {
+  route: string;
+  source?: Source;
+  id?: string;
+  format?: string;
+};
+
+function createRequestTiming(): RequestTiming {
+  return { entries: [] };
+}
+
+async function measureTiming<T>(
+  timing: RequestTiming,
+  name: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const start = performance.now();
+
+  try {
+    return await fn();
+  } finally {
+    timing.entries.push({
+      name,
+      durationMs: performance.now() - start,
+    });
+  }
+}
+
+function formatDuration(durationMs: number): number {
+  return Math.round(durationMs * 10) / 10;
+}
+
+function responseWithServerTiming(
+  response: Response,
+  timing: RequestTiming,
+  totalMs: number,
+): Response {
+  const headers = new Headers(response.headers);
+  const timingValues = [
+    `worker;dur=${totalMs.toFixed(1)}`,
+    ...timing.entries.map(entry =>
+      `${entry.name};dur=${entry.durationMs.toFixed(1)}`
+    ),
+  ];
+
+  const existing = headers.get("Server-Timing");
+  headers.set(
+    "Server-Timing",
+    existing ? `${existing}, ${timingValues.join(", ")}` : timingValues.join(", "),
+  );
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function logSlowRequest(
+  request: Request,
+  response: Response,
+  context: RequestLogContext,
+  timing: RequestTiming,
+  totalMs: number,
+) {
+  if (totalMs < SLOW_REQUEST_THRESHOLD_MS) return;
+
+  const url = new URL(request.url);
+
+  console.log("[perf] slow request", {
+    method: request.method,
+    path: url.pathname,
+    status: response.status,
+    durationMs: formatDuration(totalMs),
+    route: context.route,
+    source: context.source,
+    id: context.id,
+    format: context.format,
+    timings: timing.entries.map(entry => ({
+      name: entry.name,
+      durationMs: formatDuration(entry.durationMs),
+    })),
+  });
+}
+
+function logErroredRequest(
+  request: Request,
+  context: RequestLogContext,
+  timing: RequestTiming,
+  totalMs: number,
+  err: unknown,
+) {
+  const url = new URL(request.url);
+  const error = err as any;
+
+  console.log("[perf] errored request", {
+    method: request.method,
+    path: url.pathname,
+    durationMs: formatDuration(totalMs),
+    route: context.route,
+    source: context.source,
+    id: context.id,
+    format: context.format,
+    error: String(error?.message ?? err),
+    timings: timing.entries.map(entry => ({
+      name: entry.name,
+      durationMs: formatDuration(entry.durationMs),
+    })),
+  });
+}
+
+function requestLogContextForRoute(route: Route): RequestLogContext {
+  switch (route.kind) {
+  case "chat":
+    return {
+      route: "chat",
+      source: route.source,
+      id: route.id,
+      format: route.format,
+    };
+  case "at":
+    return {
+      route: "at",
+      source: route.source,
+      id: route.id,
+    };
+  case "open":
+    return { route: "open" };
+  case "reply":
+    return { route: "reply" };
+  }
+}
 
 
 function canonicalRedirect(request: Request): Response | null {
@@ -1163,80 +1308,108 @@ export class AnchorGate {
 export default {
 
   async fetch(request: Request, env: Env): Promise<Response> {
-
-    const redirect = canonicalRedirect(request);
-    if (redirect) return redirect;
-
+    const timing = createRequestTiming();
+    const start = performance.now();
     const url = new URL(request.url);
+    let logContext: RequestLogContext = { route: "unrouted" };
 
-    // serve static assets first
-    if (request.method === "GET" && url.pathname.startsWith("/static/")) {
-      return env.ASSETS.fetch(request);
-    }
+    try {
+      const response = await (async () => {
+        const redirect = canonicalRedirect(request);
+        if (redirect) {
+          logContext = { route: "redirect" };
+          return redirect;
+        }
+
+        // serve static assets first
+        if (request.method === "GET" && url.pathname.startsWith("/static/")) {
+          logContext = { route: "static" };
+          return measureTiming(timing, "assets", () => env.ASSETS.fetch(request));
+        }
     
-    const agent = await getAgent(env);
+        const agent = await measureTiming(timing, "agent", () => getAgent(env));
     
 
 
-    const ctx: RequestContext = {
-      url,
-      simulate:
-      isDev(env) && url.searchParams.get("simulate") === "rateLimited"
-	? "rateLimited"
-	: isDev(env) && url.searchParams.get("simulate") === "notFound"
-        ? "notFound"
-        : undefined,
-      debug: url.searchParams.has("debug"),
-    };
+        const ctx: RequestContext = {
+          url,
+          simulate:
+          isDev(env) && url.searchParams.get("simulate") === "rateLimited"
+	    ? "rateLimited"
+	    : isDev(env) && url.searchParams.get("simulate") === "notFound"
+            ? "notFound"
+            : undefined,
+          debug: url.searchParams.has("debug"),
+          timing,
+        };
     
     
-    if (isDev(env)) {
-      // debug: list anchors
-      if (request.method === "GET" && url.pathname === "/debug/anchors") {
-	return renderDebugList(agent, ANCHOR_COLLECTION, "anchors");
-      }
+        if (isDev(env)) {
+          // debug: list anchors
+          if (request.method === "GET" && url.pathname === "/debug/anchors") {
+	    logContext = { route: "debug/anchors" };
+	    return renderDebugList(agent, ANCHOR_COLLECTION, "anchors");
+          }
       
-      // debug: list posts
-      if (request.method === "GET" && url.pathname === "/debug/posts") {
-	return renderDebugList(agent, POST_COLLECTION, "posts");
-      }
+          // debug: list posts
+          if (request.method === "GET" && url.pathname === "/debug/posts") {
+	    logContext = { route: "debug/posts" };
+	    return renderDebugList(agent, POST_COLLECTION, "posts");
+          }
 
-      // debug: papers grouped with anchors/posts
-      if (request.method === "GET" && url.pathname === "/debug/papers") {
-	return renderDebugPapers(agent);
-      }
+          // debug: papers grouped with anchors/posts
+          if (request.method === "GET" && url.pathname === "/debug/papers") {
+	    logContext = { route: "debug/papers" };
+	    return renderDebugPapers(agent);
+          }
 
       
-      // debug: delete anchor
-      let m = url.pathname.match(/^\/debug\/anchors\/delete\/([^/]+)$/);
-      if (request.method === "GET" && m) {
-	return debugDelete(request, agent, ANCHOR_COLLECTION, m[1], "/debug/anchors");
-      }
+          // debug: delete anchor
+          let m = url.pathname.match(/^\/debug\/anchors\/delete\/([^/]+)$/);
+          if (request.method === "GET" && m) {
+	    logContext = { route: "debug/anchors/delete" };
+	    return debugDelete(request, agent, ANCHOR_COLLECTION, m[1], "/debug/anchors");
+          }
       
-      // debug: delete post
-      m = url.pathname.match(/^\/debug\/posts\/delete\/([^/]+)$/);
-      if (request.method === "GET" && m) {
-	return debugDelete(request, agent, POST_COLLECTION, m[1], "/debug/posts");
-      }
+          // debug: delete post
+          m = url.pathname.match(/^\/debug\/posts\/delete\/([^/]+)$/);
+          if (request.method === "GET" && m) {
+	    logContext = { route: "debug/posts/delete" };
+	    return debugDelete(request, agent, POST_COLLECTION, m[1], "/debug/posts");
+          }
 
-    }
+        }
 	
-    const route = parseRoute(request);
+        const route = parseRoute(request);
     
-    if (!route) return new Response("Not found", { status: 404 });
+        if (!route) {
+          logContext = { route: "not-found" };
+          return new Response("Not found", { status: 404 });
+        }
 
+        logContext = requestLogContextForRoute(route);
     
-    switch (route.kind) {
-    case "open":
-      return handleOpen(route);
-    case "at":
-      return handleAt(agent,route);
+        switch (route.kind) {
+        case "open":
+          return handleOpen(route);
+        case "at":
+          return handleAt(timing,agent,route);
       
-    case "chat":
-      return handleChat(env,ctx,agent,route);
+        case "chat":
+          return handleChat(env,ctx,agent,route);
       
-    case "reply":
-      return json({ error: "Not implemented yet" }, 501);
+        case "reply":
+          return json({ error: "Not implemented yet" }, 501);
+        }
+      })();
+
+      const totalMs = performance.now() - start;
+      logSlowRequest(request, response, logContext, timing, totalMs);
+      return responseWithServerTiming(response, timing, totalMs);
+    } catch (err) {
+      const totalMs = performance.now() - start;
+      logErroredRequest(request, logContext, timing, totalMs, err);
+      throw err;
     }
   },
 };
@@ -1328,12 +1501,15 @@ function handleOpen(route: Extract<Route, { kind: "open" }>): Response {
 
 
 async function handleAt(
-    agent: AtpAgent,
+  timing: RequestTiming,
+  agent: AtpAgent,
   route: Extract<Route, { kind: "at" }>,
 ): Promise<Response> {
 
 
-  const anchor = await getAnchorRecord(agent, route.source, route.id);
+  const anchor = await measureTiming(timing, "anchor_lookup", () =>
+    getAnchorRecord(agent, route.source, route.id)
+  );
 
   if (!anchor.exists) {
     return json({ error: "Anchor not found" }, 404);
@@ -1355,7 +1531,9 @@ async function handleChat(
   let metadata: PaperMetadata;
 
   try {
-    metadata = await fetchMetadata(env, route.source, route.id);
+    metadata = await measureTiming(ctx.timing, "metadata", () =>
+      fetchMetadata(env, route.source, route.id)
+    );
   } catch (err: any) {
     if (route.source === "doi" || route.source === "ssrn") {
       const missingFields =
@@ -1386,10 +1564,12 @@ async function handleChat(
 
   
   // 2. Then check anchor/post.
-  const existingAnchor = await getAnchorRecord(agent, route.source, route.id);
+  const existingAnchor = await measureTiming(ctx.timing, "anchor_lookup", () =>
+    getAnchorRecord(agent, route.source, route.id)
+  );
 
-  let anchor;
-  let anchorPost;
+  let anchor: ExistingAnchor;
+  let anchorPost: AnchorPost;
 
   const hasAnchorDiscussion =
 	existingAnchor.exists &&
@@ -1399,17 +1579,23 @@ async function handleChat(
   
   // 3. arXiv rate limited, but existing PubChat page exists.
   if ((metadata as any).rateLimited && hasAnchorDiscussion) {
-    anchor = existingAnchor;
+    anchor = existingAnchor as ExistingAnchor;
     anchorPost = anchorPostFromAnchor(agent, anchor);
 
-    const fallbackMetadata = await metadataFromBlueskyPost(
-      agent,
-      anchorPost.uri,
-      route.source,
-      route.id,
+    const fallbackMetadata = await measureTiming(
+      ctx.timing,
+      "fallback_metadata",
+      () => metadataFromBlueskyPost(
+        agent,
+        anchorPost.uri,
+        route.source,
+        route.id,
+      ),
     );
 
-    const thread = await fetchDiscussionThreadWithImports(agent, anchorPost.uri);
+    const thread = await measureTiming(ctx.timing, "thread", () =>
+      fetchDiscussionThreadWithImports(agent, anchorPost.uri)
+    );
 
     const data = {
       source: route.source,
@@ -1451,11 +1637,15 @@ async function handleChat(
 
   // 5. Normal path. The gate owns the create/repair decision under its
   // per-paper Durable Object mutex.
-  const resolved = await getOrCreateAnchorPostViaGate(
-    env,
-    route.source,
-    route.id,
-    metadata,
+  const resolved = await measureTiming(
+    ctx.timing,
+    "anchor_gate",
+    () => getOrCreateAnchorPostViaGate(
+      env,
+      route.source,
+      route.id,
+      metadata,
+    ),
   );
 
   anchor = resolved.anchor;
@@ -1465,7 +1655,9 @@ async function handleChat(
   let warning: string | undefined;
 
   try {
-    thread = await fetchDiscussionThreadWithImports(agent, anchorPost.uri);
+    thread = await measureTiming(ctx.timing, "thread", () =>
+      fetchDiscussionThreadWithImports(agent, anchorPost.uri)
+    );
   } catch (err) {
     if (!isBlueskyPostNotFoundError(err)) {
       throw err;
