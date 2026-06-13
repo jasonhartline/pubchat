@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  chatPathForInput,
   crossrefPdfCandidates,
+  fetchOpenAlexSsrnUrlMetadata,
+  fetchSsrnMetadata,
   openAlexPdfCandidates,
   selectDoiAbstract,
   selectDoiTitle,
@@ -9,7 +12,19 @@ import {
   unpaywallPdfCandidates,
 } from '../src/index';
 
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 describe('DOI metadata helpers', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it('strips provider HTML formatting from DOI titles', () => {
     expect(selectDoiTitle([
       {
@@ -111,5 +126,124 @@ describe('DOI metadata helpers', () => {
         matchedBy: 'exact-doi',
       },
     ])).toBeUndefined();
+  });
+
+  it('routes SSRN URLs to the SSRN chat source', () => {
+    expect(chatPathForInput(
+      'https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3817621',
+    )).toBe('/chat/ssrn/3817621');
+
+    expect(chatPathForInput(
+      'https://ssrn.com/abstract=3817621',
+    )).toBe('/chat/ssrn/3817621');
+
+    expect(chatPathForInput(
+      'https://autopapers.ssrn.com/sol3/papers.cfm?abstract_id=143834',
+    )).toBe('/chat/ssrn/143834');
+
+    expect(chatPathForInput(
+      'https://papers.ssrn.com/sol3/Delivery.cfm/nber_w5661.pdf?abstractid=7788',
+    )).toBe('/chat/ssrn/7788');
+  });
+
+  it('resolves SSRN metadata through the DOI composite workflow', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.startsWith('https://api.crossref.org/works/')) {
+        return jsonResponse({
+          message: {
+            DOI: '10.2139/ssrn.6602721',
+            title: [
+              'Aerodynamic and Propulsion Optimization Design of Electric Aircraft',
+            ],
+            abstract: '<jats:p>Recovered from Crossref.</jats:p>',
+            author: [
+              { given: 'Zhang', family: 'Ruilin' },
+              { given: 'Dan', family: 'Min' },
+            ],
+            published: { 'date-parts': [[2026]] },
+            URL: 'https://doi.org/10.2139/ssrn.6602721',
+          },
+        });
+      }
+
+      if (url.startsWith('https://api.datacite.org/')) {
+        return jsonResponse({}, 404);
+      }
+
+      if (url.startsWith('https://api.openalex.org/')) {
+        return jsonResponse({ results: [] });
+      }
+
+      return jsonResponse({}, 404);
+    }));
+
+    const metadata = await fetchSsrnMetadata({} as any, '6602721');
+
+    expect(metadata).toMatchObject({
+      title: 'Aerodynamic and Propulsion Optimization Design of Electric Aircraft',
+      abstract: 'Recovered from Crossref.',
+      authors: ['Zhang Ruilin', 'Dan Min'],
+      year: 2026,
+      source: 'ssrn',
+      sourceId: '6602721',
+      homeUrl: 'https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6602721',
+      doi: '10.2139/ssrn.6602721',
+      metadataProvider: 'doi-composite',
+    });
+  });
+
+  it('resolves SSRN metadata from OpenAlex SSRN landing-page locations', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const parsed = new URL(url);
+
+      expect(parsed.searchParams.get('filter')).toBe(
+        'locations.landing_page_url:https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1496199',
+      );
+
+      return jsonResponse({
+        results: [
+          {
+            id: 'https://openalex.org/W3124182182',
+            doi: null,
+            title: 'The Theory of Economic Development',
+            publication_year: 1934,
+            abstract_inverted_index: {
+              Recovered: [0],
+              from: [1],
+              OpenAlex: [2],
+            },
+            authorships: [
+              { author: { display_name: 'Joseph A. Schumpeter' } },
+            ],
+            primary_location: {
+              landing_page_url: 'https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1496199',
+              pdf_url: null,
+            },
+            locations: [
+              {
+                landing_page_url: 'https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1496199',
+                pdf_url: null,
+              },
+            ],
+          },
+        ],
+      });
+    }));
+
+    const metadata = await fetchOpenAlexSsrnUrlMetadata({} as any, '1496199');
+
+    expect(metadata).toMatchObject({
+      title: 'The Theory of Economic Development',
+      abstract: 'Recovered from OpenAlex',
+      authors: ['Joseph A. Schumpeter'],
+      year: 1934,
+      source: 'ssrn',
+      sourceId: '1496199',
+      homeUrl: 'https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1496199',
+      metadataProvider: 'openalex',
+    });
   });
 });

@@ -150,7 +150,8 @@ const SOURCE_CONFIGS: Record<Source, SourceConfig> = {
       return `https://papers.ssrn.com/sol3/papers.cfm?abstract_id=${id}`;
     },
     metadataResolvers: [
-      (env, id) => fetchDataciteMetadata("ssrn", env, id),
+      fetchSsrnMetadata,
+      fetchOpenAlexSsrnUrlMetadata,
     ],
   },
 
@@ -1241,7 +1242,28 @@ export default {
 };
 
 
-function chatPathForInput(raw: string): string | null {
+function ssrnIdFromUrl(raw: string): string | null {
+  let url: URL;
+
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return null;
+  }
+
+  const host = url.hostname.toLowerCase();
+  if (host !== "ssrn.com" && !host.endsWith(".ssrn.com")) return null;
+
+  const fromQuery =
+    url.searchParams.get("abstract_id") ??
+    url.searchParams.get("abstractid");
+  if (fromQuery) return sourceConfig("ssrn").parseId(fromQuery);
+
+  const m = url.pathname.match(/(?:^|\/)abstract=(\d+)\/?$/i);
+  return m ? sourceConfig("ssrn").parseId(m[1]) : null;
+}
+
+export function chatPathForInput(raw: string): string | null {
   let s = raw.trim();
 
   if (!s) return null;
@@ -1264,6 +1286,12 @@ function chatPathForInput(raw: string): string | null {
   const arxiv = parseSourceId("arxiv", s);
   if (arxiv) {
     return `/chat/arxiv/${arxiv.id}`;
+  }
+
+  // SSRN URL
+  const ssrnId = ssrnIdFromUrl(s);
+  if (ssrnId) {
+    return `/chat/ssrn/${ssrnId}`;
   }
 
   // DOI / DOI URL
@@ -1555,6 +1583,59 @@ function homeUrlFor(source: Source, id: string): string {
 
 function pdfUrlFor(source: Source, id: string): string | undefined {
   return sourceConfig(source).pdfUrl?.(id);
+}
+
+export async function fetchSsrnMetadata(
+  env: Env,
+  id: string,
+): Promise<PaperMetadata> {
+  const doi = doiFor("ssrn", id);
+  if (!doi) throw new Error("No DOI mapping for source: ssrn");
+
+  const metadata = await fetchCompositeDoiMetadata(env, doi);
+
+  return {
+    ...metadata,
+    source: "ssrn",
+    sourceId: id,
+    homeUrl: homeUrlFor("ssrn", id),
+    doi: metadata.doi ?? doi,
+  };
+}
+
+export async function fetchOpenAlexSsrnUrlMetadata(
+  env: Env,
+  id: string,
+): Promise<PaperMetadata> {
+  const work = await fetchOpenAlexWorkBySsrnUrl(env, id);
+  const metadata = normalizeOpenAlexWork(work, "ssrn", id);
+
+  const title = cleanTitle(metadata.title);
+  const abstract = cleanAbstract(metadata.abstract);
+  const authors = metadata.authors.filter(Boolean);
+  const year = metadata.year;
+
+  const missing: string[] = [];
+  if (!title) missing.push("title");
+  if (authors.length === 0) missing.push("authors");
+  if (!Number.isFinite(year)) missing.push("year");
+  if (!abstract) missing.push("abstract");
+
+  if (missing.length > 0) {
+    throw new MetadataMissingError(
+      `OpenAlex SSRN URL metadata missing: ${missing.join(", ")}`,
+      missing,
+    );
+  }
+
+  return {
+    ...metadata,
+    title,
+    abstract,
+    authors,
+    year,
+    homeUrl: homeUrlFor("ssrn", id),
+  };
 }
 
 async function fetchCompositeDoiMetadata(
@@ -1952,6 +2033,43 @@ async function fetchOpenAlexWorkByLocationDoi(
   return work;
 }
 
+function ssrnOpenAlexLandingPageUrls(id: string): string[] {
+  return [
+    `https://papers.ssrn.com/sol3/papers.cfm?abstract_id=${id}`,
+    `https://papers.ssrn.com/sol3/papers.cfm?abstractid=${id}`,
+    `https://autopapers.ssrn.com/sol3/papers.cfm?abstract_id=${id}`,
+    `https://autopapers.ssrn.com/sol3/papers.cfm?abstractid=${id}`,
+    `https://papers.ssrn.com/sol3/Delivery.cfm?abstractid=${id}`,
+    `https://www.ssrn.com/abstract=${id}`,
+    `https://ssrn.com/abstract=${id}`,
+  ];
+}
+
+async function fetchOpenAlexWorkBySsrnUrl(
+  env: Env,
+  id: string,
+): Promise<any> {
+  for (const landingPageUrl of ssrnOpenAlexLandingPageUrls(id)) {
+    const url = new URL("https://api.openalex.org/works");
+    url.searchParams.set(
+      "filter",
+      `locations.landing_page_url:${landingPageUrl}`,
+    );
+    url.searchParams.set("per-page", "3");
+    setOpenAlexQueryParams(url, env);
+
+    const data = await fetchOpenAlexWork(env, url.toString(), "SSRN URL");
+    const results = Array.isArray(data.results) ? data.results : [];
+    const work = results.find((x: any) => openAlexWorkMatchesSsrnId(x, id));
+
+    if (work) return work;
+  }
+
+  const err = new Error("OpenAlex SSRN URL request failed: 404");
+  (err as any).status = 404;
+  throw err;
+}
+
 function openAlexWorkToDoiPartial(
   work: any,
   requestedDoi: string,
@@ -2001,6 +2119,19 @@ function openAlexLandingPageForDoi(work: any, doi: string): string | undefined {
   return (work?.locations ?? [])
     .find((location: any) => openAlexLocationMatchesDoi(location, doi))
     ?.landing_page_url;
+}
+
+function openAlexWorkMatchesSsrnId(work: any, id: string): boolean {
+  return [
+    work?.primary_location,
+    work?.best_oa_location,
+    ...(work?.locations ?? []),
+  ].some((location: any) => openAlexLocationMatchesSsrnId(location, id));
+}
+
+function openAlexLocationMatchesSsrnId(location: any, id: string): boolean {
+  const landingPageUrl = cleanString(location?.landing_page_url);
+  return !!landingPageUrl && ssrnIdFromUrl(landingPageUrl) === id;
 }
 
 export function openAlexPdfCandidates(
