@@ -399,6 +399,12 @@ body.guide-page {
   padding: 14px 20px;
 }
 
+.discussion-loading {
+  padding: 16px 20px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
 .reply-box a,
 .post-actions a {
   font-size: 14px;

@@ -75,9 +75,11 @@ function pubchatUserAgent(env: Env): string {
 
 type Route =
   | { kind: "at"; source: Source; id: string }
-  | { kind: "chat"; source: Source; id: string; format: "html" | "json" }
+  | { kind: "chat"; source: Source; id: string; format: ChatFormat }
   | { kind: "open"; q: string }
   | { kind: "reply" };
+
+type ChatFormat = "html" | "json" | "discussion";
 
 
 
@@ -933,7 +935,7 @@ function parseRoute(request: Request): Route | null {
         kind: "chat",
         source: "doi",
         id: doi,
-        format: url.searchParams.get("format") === "json" ? "json" : "html",
+        format: chatFormat(url),
       };
     }
 
@@ -973,7 +975,7 @@ function parseRoute(request: Request): Route | null {
         kind: "chat",
         source: sid.source,
         id: sid.id,
-        format: m[2] ? "json" : "html",
+        format: chatFormat(url, m[2]),
       };
     }
   }
@@ -983,6 +985,24 @@ function parseRoute(request: Request): Route | null {
   }
 
   return null;
+}
+
+function chatFormat(url: URL, jsonSuffix?: string): ChatFormat {
+  if (jsonSuffix) return "json";
+
+  const format = url.searchParams.get("format");
+
+  if (format === "json" || format === "discussion") {
+    return format;
+  }
+
+  return "html";
+}
+
+function formatPath(url: URL, format: ChatFormat): string {
+  const next = new URL(url.toString());
+  next.searchParams.set("format", format);
+  return `${next.pathname}${next.search}`;
 }
 
 
@@ -1327,10 +1347,6 @@ export default {
           return measureTiming(timing, "assets", () => env.ASSETS.fetch(request));
         }
     
-        const agent = await measureTiming(timing, "agent", () => getAgent(env));
-    
-
-
         const ctx: RequestContext = {
           url,
           simulate:
@@ -1347,18 +1363,21 @@ export default {
         if (isDev(env)) {
           // debug: list anchors
           if (request.method === "GET" && url.pathname === "/debug/anchors") {
+            const agent = await measureTiming(timing, "agent", () => getAgent(env));
 	    logContext = { route: "debug/anchors" };
 	    return renderDebugList(agent, ANCHOR_COLLECTION, "anchors");
           }
       
           // debug: list posts
           if (request.method === "GET" && url.pathname === "/debug/posts") {
+            const agent = await measureTiming(timing, "agent", () => getAgent(env));
 	    logContext = { route: "debug/posts" };
 	    return renderDebugList(agent, POST_COLLECTION, "posts");
           }
 
           // debug: papers grouped with anchors/posts
           if (request.method === "GET" && url.pathname === "/debug/papers") {
+            const agent = await measureTiming(timing, "agent", () => getAgent(env));
 	    logContext = { route: "debug/papers" };
 	    return renderDebugPapers(agent);
           }
@@ -1367,6 +1386,7 @@ export default {
           // debug: delete anchor
           let m = url.pathname.match(/^\/debug\/anchors\/delete\/([^/]+)$/);
           if (request.method === "GET" && m) {
+            const agent = await measureTiming(timing, "agent", () => getAgent(env));
 	    logContext = { route: "debug/anchors/delete" };
 	    return debugDelete(request, agent, ANCHOR_COLLECTION, m[1], "/debug/anchors");
           }
@@ -1374,6 +1394,7 @@ export default {
           // debug: delete post
           m = url.pathname.match(/^\/debug\/posts\/delete\/([^/]+)$/);
           if (request.method === "GET" && m) {
+            const agent = await measureTiming(timing, "agent", () => getAgent(env));
 	    logContext = { route: "debug/posts/delete" };
 	    return debugDelete(request, agent, POST_COLLECTION, m[1], "/debug/posts");
           }
@@ -1393,10 +1414,13 @@ export default {
         case "open":
           return handleOpen(route);
         case "at":
+          {
+            const agent = await measureTiming(timing, "agent", () => getAgent(env));
           return handleAt(timing,agent,route);
+          }
       
         case "chat":
-          return handleChat(env,ctx,agent,route);
+          return handleChat(env,ctx,route);
       
         case "reply":
           return json({ error: "Not implemented yet" }, 501);
@@ -1522,7 +1546,6 @@ async function handleAt(
 async function handleChat(
   env: Env,
   ctx: RequestContext,
-  agent: AtpAgent,
   route: Extract<Route, { kind: "chat" }>,
 ): Promise<Response> {
 
@@ -1561,6 +1584,30 @@ async function handleChat(
   if (ctx.simulate === "notFound") {
     (metadata as any).notFound = true;
   }
+
+  if (
+    route.format === "html" &&
+    !(metadata as any).rateLimited &&
+    !(metadata as any).notFound
+  ) {
+    return html(renderChatPage({
+      source: route.source,
+      sourceId: route.id,
+      metadata,
+      discussionPath: formatPath(ctx.url, "discussion"),
+      _debug: ctx.debug
+        ? {
+            cached: metadata.cached,
+            rateLimited: metadata.rateLimited,
+            notFound: metadata.notFound,
+            metadataProvider: metadata.metadataProvider,
+            discussion: "loaded asynchronously",
+          }
+        : undefined,
+    }));
+  }
+
+  const agent = await measureTiming(ctx.timing, "agent", () => getAgent(env));
 
   
   // 2. Then check anchor/post.
@@ -1615,6 +1662,7 @@ async function handleChat(
 
     
     if (route.format === "json") return json(data);
+    if (route.format === "discussion") return html(renderDiscussion(data));
     return html(renderChatPage(data));
   }
 
@@ -1701,6 +1749,7 @@ async function handleChat(
 
   
   if (route.format === "json") return json(data);
+  if (route.format === "discussion") return html(renderDiscussion(data));
   return html(renderChatPage(data));
 }
 
@@ -3775,16 +3824,24 @@ function blueskyReplyLink(url: string, text = "Reply on Bluesky"): string {
 
 
 
-function renderChatPage(data: {
+type ChatPageData = {
   source: Source;
   sourceId: string;
-  anchor: { uri: string; cid: string;};
-  anchorPost: { uri: string; cid: string; blueskyUrl: string };
+  anchor?: { uri: string; cid: string;};
+  anchorPost?: { uri: string; cid: string; blueskyUrl: string };
   metadata: Awaited<ReturnType<typeof fetchMetadata>>;
-  thread: DiscussionPost[];
+  thread?: DiscussionPost[];
+  discussionPath?: string;
   warning?: string;
   _debug?: any;
-}): string {
+};
+
+type DiscussionRenderData = ChatPageData & {
+  anchorPost: { uri: string; cid: string; blueskyUrl: string };
+  thread: DiscussionPost[];
+};
+
+function renderChatPage(data: ChatPageData): string {
   const title = data.metadata.title ?? `${data.source}:${data.sourceId}`;
   const authors = data.metadata.authors ?? [];
 
@@ -3802,10 +3859,6 @@ function renderChatPage(data: {
 
   const image = "https://pubchat.org/static/pubchat-card.png";
 
-  const visibleThread = data.thread.filter(
-    post => post.uri !== data.anchorPost.uri,
-  );
-  
   return `<!doctype html>
 <html>
 <head>
@@ -3882,14 +3935,80 @@ ${
     : ""
 }
 
-${renderPaperLinks(data.metadata, data.anchorPost.blueskyUrl)}
+${renderPaperLinks(data.metadata, data.anchorPost?.blueskyUrl)}
 
 
 
 </section>
 
 
-<section class="discussion">
+${data.anchorPost && data.thread
+  ? renderDiscussion(data as DiscussionRenderData)
+  : renderDiscussionLoader(data.discussionPath ?? "")
+}
+<footer class="site-footer">
+  PubChat attaches Bluesky discussions to academic papers. Reply on Bluesky to join the discussion.  <a href=/static/guide.html>[help]</a>
+</footer>
+  </main>
+</body>
+</html>`;
+}
+
+function renderDiscussionLoader(discussionPath: string): string {
+  return `
+<section
+  class="discussion"
+  id="discussion"
+  data-discussion-url="${escapeAttr(discussionPath)}"
+>
+  <h2 class="section-header">
+    Bluesky Discussion
+  </h2>
+
+  <div class="discussion-loading">
+    Loading Bluesky discussion...
+  </div>
+</section>
+
+<script>
+(() => {
+  const discussion = document.getElementById("discussion");
+  if (!discussion) return;
+
+  const url = discussion.dataset.discussionUrl;
+  const loading = discussion.querySelector(".discussion-loading");
+
+  if (!url) {
+    if (loading) loading.textContent = "Could not load the Bluesky discussion.";
+    return;
+  }
+
+  fetch(url, { headers: { accept: "text/html" } })
+    .then(response => {
+      if (!response.ok) throw new Error(String(response.status));
+      return response.text();
+    })
+    .then(html => {
+      discussion.outerHTML = html;
+      if (window.MathJax && window.MathJax.typesetPromise) {
+        window.MathJax.typesetPromise();
+      }
+    })
+    .catch(() => {
+      if (loading) loading.textContent = "Could not load the Bluesky discussion.";
+    });
+})();
+</script>
+  `;
+}
+
+function renderDiscussion(data: DiscussionRenderData): string {
+  const visibleThread = data.thread.filter(
+    post => post.uri !== data.anchorPost.uri,
+  );
+
+  return `
+<section class="discussion" id="discussion">
 
 <h2 class="section-header">
   Bluesky Discussion
@@ -3974,12 +4093,7 @@ ${
           `).join("")
 }
 </section>
-<footer class="site-footer">
-  PubChat attaches Bluesky discussions to academic papers. Reply on Bluesky to join the discussion.  <a href=/static/guide.html>[help]</a>
-</footer>
-  </main>
-</body>
-</html>`;
+  `;
 }
 
 
