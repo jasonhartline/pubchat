@@ -6,6 +6,10 @@
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "start": "wrangler dev",
+    "headers:check": "node scripts/check-security-headers.mjs https://pubchat.org",
+    "cf:security:list": "node scripts/cf-apply-security-rules.mjs --list",
+    "cf:security:plan": "node scripts/cf-apply-security-rules.mjs",
+    "cf:security:apply": "node scripts/cf-apply-security-rules.mjs --apply",
     "perf:tail": "wrangler tail pubchat --format pretty --search \"[perf]\"",
     "test": "vitest",
     "cf-typegen": "wrangler types"

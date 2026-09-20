@@ -20,6 +20,32 @@ const POST_TEMPLATE =
       "“{{title}}” ({{year}})\nby {{authors}}\n\nCC: PubChat";
 
 const SLOW_REQUEST_THRESHOLD_MS = 1500;
+const SECURITY_HEADERS: Record<string, string> = {
+  "Content-Security-Policy": [
+    "default-src 'self'",
+    "base-uri 'none'",
+    "connect-src 'self'",
+    "font-src 'self' https://cdn.jsdelivr.net data:",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "img-src 'self' https: data:",
+    "object-src 'none'",
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+    "style-src 'self' 'unsafe-inline'",
+    "upgrade-insecure-requests",
+  ].join("; "),
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Permissions-Policy": [
+    "camera=()",
+    "geolocation=()",
+    "microphone=()",
+    "payment=()",
+    "usb=()",
+  ].join(", "),
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+};
 
 
 const STAT_ICONS: Record<"reply" | "repost" | "quote" | "like", string> = {
@@ -102,10 +128,13 @@ type AnchorRecord = {
 
 type Source = "arxiv" | "ssrn" | "doi";
 
-type MetadataResolver = (
-  env: Env,
-  id: string,
-) => Promise<PaperMetadata>;
+type MetadataResolver = {
+  name: string;
+  resolve: (
+    env: Env,
+    id: string,
+  ) => Promise<PaperMetadata>;
+};
 
 type SourceConfig = {
   source: Source;
@@ -136,8 +165,14 @@ const SOURCE_CONFIGS: Record<Source, SourceConfig> = {
       return `https://arxiv.org/pdf/${id}.pdf`;
     },
     metadataResolvers: [
-      (env, id) => fetchDataciteMetadata("arxiv", env, id),
-      (_env, id) => fetchArxivMetadata(id),
+      {
+        name: "datacite",
+        resolve: (env, id) => fetchDataciteMetadata("arxiv", env, id),
+      },
+      {
+        name: "arxiv",
+        resolve: (_env, id) => fetchArxivMetadata(id),
+      },
     ],
   },
 
@@ -154,8 +189,14 @@ const SOURCE_CONFIGS: Record<Source, SourceConfig> = {
       return `https://papers.ssrn.com/sol3/papers.cfm?abstract_id=${id}`;
     },
     metadataResolvers: [
-      fetchSsrnMetadata,
-      fetchOpenAlexSsrnUrlMetadata,
+      {
+        name: "ssrn_doi_composite",
+        resolve: fetchSsrnMetadata,
+      },
+      {
+        name: "openalex_ssrn_url",
+        resolve: fetchOpenAlexSsrnUrlMetadata,
+      },
     ],
   },
 
@@ -172,7 +213,10 @@ const SOURCE_CONFIGS: Record<Source, SourceConfig> = {
       return `https://doi.org/${id}`;
     },
     metadataResolvers: [
-      fetchCompositeDoiMetadata,
+      {
+        name: "doi_composite",
+        resolve: fetchCompositeDoiMetadata,
+      },
     ],
   },
 };
@@ -267,6 +311,7 @@ type MetadataProvider =
   | "arxiv"
   | "crossref"
   | "unpaywall"
+  | "bluesky-anchor"
   | "doi-composite";
 
 
@@ -319,6 +364,8 @@ export type PartialDoiMetadata = {
 };
 
 const REQUIRED_METADATA_FIELDS = ["title", "authors", "year", "abstract"];
+const ANCHOR_ABSTRACT_WARNING =
+  "Complete paper metadata is currently unavailable. This abstract excerpt comes from the existing PubChat Bluesky post and may be truncated.";
 const OPENALEX_WORK_SELECT = [
   "id",
   "doi",
@@ -1054,6 +1101,20 @@ function formatDuration(durationMs: number): number {
   return Math.round(durationMs * 10) / 10;
 }
 
+function applySecurityHeaders(headers: Headers): Headers {
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    if (!headers.has(name)) {
+      headers.set(name, value);
+    }
+  }
+
+  return headers;
+}
+
+function responseHeaders(init?: HeadersInit): Headers {
+  return applySecurityHeaders(new Headers(init));
+}
+
 function responseWithServerTiming(
   response: Response,
   timing: RequestTiming,
@@ -1072,6 +1133,8 @@ function responseWithServerTiming(
     "Server-Timing",
     existing ? `${existing}, ${timingValues.join(", ")}` : timingValues.join(", "),
   );
+
+  applySecurityHeaders(headers);
 
   return new Response(response.body, {
     status: response.status,
@@ -1542,6 +1605,53 @@ async function handleAt(
   return json(anchor);
 }
 
+type RecoveredAnchorMetadata = {
+  agent: AtpAgent;
+  anchor: ExistingAnchor;
+  metadata: PaperMetadata;
+};
+
+async function recoverMetadataFromExistingAnchor(
+  env: Env,
+  timing: RequestTiming,
+  source: Source,
+  id: string,
+  known?: { agent: AtpAgent; anchor: ExistingAnchor },
+): Promise<RecoveredAnchorMetadata | null> {
+  const agent = known?.agent ??
+    await measureTiming(timing, "agent", () => getAgent(env));
+  const anchor = known?.anchor ??
+    await measureTiming(timing, "anchor_lookup", () =>
+      getAnchorRecord(agent, source, id)
+    );
+  if (!anchor.exists || !anchor.record.discussion) return null;
+
+  const post = anchorPostFromAnchor(agent, anchor);
+  const postMetadata = await measureTiming(timing, "anchor_metadata", () =>
+    metadataFromBlueskyPost(agent, post.uri, source, id)
+  );
+  const linkedPaper = parsePubChatPaperUrl(postMetadata.homeUrl);
+  if (linkedPaper?.source !== source || linkedPaper.id !== id) return null;
+
+  const abstract = abstractExcerptFromAnchorDescription(
+    postMetadata.abstract, postMetadata.authors,
+  );
+
+  return {
+    agent,
+    anchor,
+    metadata: {
+      ...postMetadata,
+      abstract,
+      homeUrl: homeUrlFor(source, id),
+      doi: doiFor(source, id),
+      pdfUrl: pdfUrlFor(source, id),
+      metadataProvider: "bluesky-anchor",
+      rateLimited: false,
+    },
+  };
+}
+
 
 async function handleChat(
   env: Env,
@@ -1552,29 +1662,50 @@ async function handleChat(
   
 
   let metadata: PaperMetadata;
+  let recovered: RecoveredAnchorMetadata | null = null;
 
   try {
     metadata = await measureTiming(ctx.timing, "metadata", () =>
-      fetchMetadata(env, route.source, route.id)
+      fetchMetadata(env, route.source, route.id, ctx.timing)
     );
   } catch (err: any) {
-    if (route.source === "doi" || route.source === "ssrn") {
-      const missingFields =
-        err instanceof MetadataMissingError
-          ? err.missing
-          : undefined;
+    if (route.source === "doi") {
+      try {
+        const candidate = await recoverMetadataFromExistingAnchor(
+          env, ctx.timing, route.source, route.id,
+        );
+        if (candidate?.metadata.abstract) recovered = candidate;
+      } catch (recoveryError) {
+        console.log("[anchor] metadata recovery failed", {
+          source: route.source,
+          id: route.id,
+          recoveryError,
+        });
+      }
 
-      return html(renderUnavailablePage({
-	title: "Paper metadata is unavailable",
-	message:
-        `PubChat cannot create a discussion page for this ${route.source.toUpperCase()} paper because supported public metadata APIs did not provide all required metadata.`,
-	id: route.id,
-        missingFields,
-        requiredFields: REQUIRED_METADATA_FIELDS,
-      }), 422);
     }
 
-    throw err;
+    if (route.source === "doi" || route.source === "ssrn") {
+      if (recovered) {
+        metadata = recovered.metadata;
+      } else {
+        const missingFields =
+          err instanceof MetadataMissingError
+            ? err.missing
+            : undefined;
+
+        return html(renderUnavailablePage({
+          title: "Paper metadata is unavailable",
+          message:
+            `PubChat cannot create a discussion page for this ${route.source.toUpperCase()} paper because supported public metadata APIs did not provide all required metadata.`,
+          id: route.id,
+          missingFields,
+          requiredFields: REQUIRED_METADATA_FIELDS,
+        }), 422);
+      }
+    } else {
+      throw err;
+    }
   }
   
   if (ctx.simulate === "rateLimited") {
@@ -1595,6 +1726,7 @@ async function handleChat(
       sourceId: route.id,
       metadata,
       discussionPath: formatPath(ctx.url, "discussion"),
+      warning: recovered ? ANCHOR_ABSTRACT_WARNING : undefined,
       _debug: ctx.debug
         ? {
             cached: metadata.cached,
@@ -1607,13 +1739,15 @@ async function handleChat(
     }));
   }
 
-  const agent = await measureTiming(ctx.timing, "agent", () => getAgent(env));
+  const agent = recovered?.agent ??
+    await measureTiming(ctx.timing, "agent", () => getAgent(env));
 
   
   // 2. Then check anchor/post.
-  const existingAnchor = await measureTiming(ctx.timing, "anchor_lookup", () =>
-    getAnchorRecord(agent, route.source, route.id)
-  );
+  const existingAnchor = recovered?.anchor ??
+    await measureTiming(ctx.timing, "anchor_lookup", () =>
+      getAnchorRecord(agent, route.source, route.id)
+    );
 
   let anchor: ExistingAnchor;
   let anchorPost: AnchorPost;
@@ -1629,16 +1763,19 @@ async function handleChat(
     anchor = existingAnchor as ExistingAnchor;
     anchorPost = anchorPostFromAnchor(agent, anchor);
 
-    const fallbackMetadata = await measureTiming(
-      ctx.timing,
-      "fallback_metadata",
-      () => metadataFromBlueskyPost(
-        agent,
-        anchorPost.uri,
-        route.source,
-        route.id,
-      ),
+    const fallback = await measureTiming(ctx.timing, "fallback_metadata", () =>
+      recoverMetadataFromExistingAnchor(
+        env, ctx.timing, route.source, route.id,
+        { agent, anchor },
+      )
     );
+    if (!fallback) {
+      return html(renderUnavailablePage({
+        title: "arXiv is rate limiting requests",
+        message: "PubChat could not recover the existing paper metadata from its Bluesky post.",
+        id: route.id,
+      }), 429);
+    }
 
     const thread = await measureTiming(ctx.timing, "thread", () =>
       fetchDiscussionThreadWithImports(agent, anchorPost.uri)
@@ -1652,7 +1789,7 @@ async function handleChat(
         cid: anchorPost.cid,
       },
       anchorPost,
-      metadata: fallbackMetadata,
+      metadata: fallback.metadata,
       thread,
       warning:
         "arXiv is rate limiting requests. Paper metadata is being shown from the existing PubChat anchor post and may be truncated.",
@@ -1683,24 +1820,31 @@ async function handleChat(
     }), 404);
   }
 
-  // 5. Normal path. The gate owns the create/repair decision under its
-  // per-paper Durable Object mutex.
-  const resolved = await measureTiming(
-    ctx.timing,
-    "anchor_gate",
-    () => getOrCreateAnchorPostViaGate(
-      env,
-      route.source,
-      route.id,
-      metadata,
-    ),
-  );
+  // The gate owns new anchor creation and repair. Recovered pages use the
+  // existing anchor directly, even when current metadata is incomplete.
+  const resolved = recovered
+    ? {
+        anchor: recovered.anchor,
+        anchorPost: anchorPostFromAnchor(agent, recovered.anchor),
+      }
+    : await measureTiming(
+        ctx.timing,
+        "anchor_gate",
+        () => getOrCreateAnchorPostViaGate(
+          env,
+          route.source,
+          route.id,
+          metadata,
+        ),
+      );
 
   anchor = resolved.anchor;
   anchorPost = resolved.anchorPost;
 
   let thread: DiscussionPost[];
-  let warning: string | undefined;
+  let warning: string | undefined = recovered
+    ? ANCHOR_ABSTRACT_WARNING
+    : undefined;
 
   try {
     thread = await measureTiming(ctx.timing, "thread", () =>
@@ -1718,8 +1862,10 @@ async function handleChat(
     });
 
     thread = [];
-    warning =
-      "The Bluesky discussion anchor could not be loaded. PubChat preserved the existing anchor and did not create another replacement.";
+    warning = [
+      warning,
+      "The Bluesky discussion anchor could not be loaded. PubChat preserved the existing anchor and did not create another replacement.",
+    ].filter(Boolean).join(" ");
   }
 
   const data = {
@@ -1757,6 +1903,7 @@ async function fetchMetadata(
   env: Env,
   source: Source,
   id: string,
+  timing?: RequestTiming,
 ): Promise<PaperMetadata> {
   const cache = caches.default;
 
@@ -1766,24 +1913,35 @@ async function fetchMetadata(
   );
 
 
-  const cached = await cache.match(cacheKey);
+  const cached = timing
+    ? await measureTiming(timing, "metadata_cache_match", () =>
+        cache.match(cacheKey)
+      )
+    : await cache.match(cacheKey);
   if (cached) {
     const data = await cached.json<PaperMetadata>();
     return { ...data, cached: true };
   }
 
-  const metadata = await resolveMetadata(env,source, id);
+  const metadata = await resolveMetadata(env, source, id, timing);
 
   if (!metadata.rateLimited && !metadata.notFound) {
-    await cache.put(
-      cacheKey,
-      new Response(JSON.stringify(metadata), {
-        headers: {
-          "content-type": "application/json; charset=utf-8",
-          "cache-control": `public, max-age=${METADATA_CACHE_MAX_AGE_SECONDS}`,
-        },
-      }),
-    );
+    const put = () =>
+      cache.put(
+        cacheKey,
+        new Response(JSON.stringify(metadata), {
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": `public, max-age=${METADATA_CACHE_MAX_AGE_SECONDS}`,
+          },
+        }),
+      );
+
+    if (timing) {
+      await measureTiming(timing, "metadata_cache_put", put);
+    } else {
+      await put();
+    }
   }
 
   return { ...metadata, cached: false };
@@ -1793,6 +1951,7 @@ async function resolveMetadata(
   env: Env,
   source: Source,
   id: string,
+  timing?: RequestTiming,
 ): Promise<PaperMetadata> {
   const cfg = sourceConfig(source);
 
@@ -1800,7 +1959,14 @@ async function resolveMetadata(
 
   for (const resolver of cfg.metadataResolvers) {
     try {
-      return await resolver(env, id);
+      const resolve = () => resolver.resolve(env, id);
+      return timing
+        ? await measureTiming(
+            timing,
+            `metadata_resolver_${resolver.name}`,
+            resolve,
+          )
+        : await resolve();
     } catch (err) {
       console.log(`Metadata resolver failed for ${source}:${id}`, err);
       lastError = err;
@@ -2866,10 +3032,7 @@ async function metadataFromBlueskyPost(
     source,
     sourceId: id,
 
-    homeUrl:
-    source === "arxiv"
-      ? `https://arxiv.org/abs/${id}`
-      : external?.uri ?? `https://pubchat.org/chat/${source}/${id}`,
+    homeUrl: external?.uri ?? homeUrlFor(source, id),
 
     pdfUrl:
       source === "arxiv"
@@ -2879,6 +3042,23 @@ async function metadataFromBlueskyPost(
     metadataProvider: "arxiv",
     rateLimited: true,
   };
+}
+
+export function abstractExcerptFromAnchorDescription(
+  description: string | null | undefined,
+  authors: string[],
+): string | null {
+  const text = cleanString(description);
+  if (!text) return null;
+
+  const authorPrefix = authors.length > 0
+    ? `by ${authors.join(", ")} `
+    : "";
+  const excerpt = authorPrefix && text.startsWith(authorPrefix)
+    ? text.slice(authorPrefix.length).trim()
+    : text;
+
+  return excerpt === "Discuss this paper on PubChat." ? null : excerpt;
 }
 
 async function fetchArxivMetadata(
@@ -3919,7 +4099,7 @@ function renderChatPage(data: ChatPageData): string {
 
 
 <blockquote class="abstract mathjax">
-  <span class="descriptor">Abstract:</span>
+  <span class="descriptor">${data.metadata.metadataProvider === "bluesky-anchor" ? "Abstract excerpt:" : "Abstract:"}</span>
   ${renderArxivAbstract(data.metadata.abstract)}
 </blockquote>
 
@@ -4219,14 +4399,14 @@ async function debugDelete(
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data, null, 2), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: responseHeaders({ "content-type": "application/json; charset=utf-8" }),
   });
 }
 
 function html(body: string, status = 200): Response {
   return new Response(body, {
     status,
-    headers: { "content-type": "text/html; charset=utf-8" },
+    headers: responseHeaders({ "content-type": "text/html; charset=utf-8" }),
   });
 }
 
