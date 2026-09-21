@@ -574,7 +574,7 @@ async function blueskyPostRefToAtUri(
   return `at://${did}/${POST_COLLECTION}/${ref.rkey}`;
 }
 
-async function fetchDiscussionThreadWithImports(
+export async function fetchDiscussionThreadWithImports(
   agent: AtpAgent,
   rootUri: string,
 ): Promise<DiscussionPost[]> {
@@ -618,8 +618,9 @@ console.log("[imports] anchorThread texts", anchorThread.map(p => ({
     try {
       importedRootUri = await blueskyPostRefToAtUri(agent, ref);
     } catch (err) {
-      console.log("Could not resolve imported Bluesky thread URL", ref.url, err);
-      continue;
+      throw new Error(`Could not resolve imported Bluesky thread URL ${ref.url}`, {
+        cause: err,
+      });
     }
 
     if (knownPostUris.has(importedRootUri)) {
@@ -631,12 +632,13 @@ console.log("[imports] anchorThread texts", anchorThread.map(p => ({
     try {
       importedThread = await fetchDiscussionThread(agent, importedRootUri);
     } catch (err) {
-      console.log("Could not fetch imported Bluesky thread", importedRootUri, err);
-      continue;
+      throw new Error(`Could not fetch imported Bluesky thread ${importedRootUri}`, {
+        cause: err,
+      });
     }
 
     if (importedThread.length === 0) {
-      continue;
+      throw new Error(`Imported Bluesky thread was empty: ${importedRootUri}`);
     }
 
     // Mark all posts known before replacing the chunk.
