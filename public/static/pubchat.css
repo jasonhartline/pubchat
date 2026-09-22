@@ -539,6 +539,13 @@ body.guide-page {
   text-decoration: none;
 }
 
+.quoted-post {
+  box-sizing: border-box;
+  padding: 14px 16px;
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
 .external-embed:hover {
   text-decoration: none;
 }

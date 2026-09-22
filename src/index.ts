@@ -3910,7 +3910,36 @@ export function renderPostEmbed(embed: any): string {
   }
 
   if (embed.$type === "app.bsky.embed.recordWithMedia#view") {
-    return renderPostEmbed(embed.media);
+    return renderPostEmbed(embed.media) + renderPostEmbed(embed.record);
+  }
+
+  if (embed.$type === "app.bsky.embed.record#view") {
+    const record = embed.record;
+    const unavailable: Record<string, string> = {
+      "app.bsky.embed.record#viewNotFound": "Quoted post not found.",
+      "app.bsky.embed.record#viewBlocked": "Quoted post is blocked.",
+      "app.bsky.embed.record#viewDetached": "Quoted post is unavailable.",
+    };
+    const message = unavailable[record?.$type];
+    if (message) {
+      return `<div class="embed quoted-post">${escapeHtml(message)}</div>`;
+    }
+    if (record?.$type !== "app.bsky.embed.record#viewRecord") return "";
+
+    const url = blueskyUrlForPost(record);
+    return `
+      <div class="embed quoted-post">
+        <div class="post-meta">
+          <a href="${escapeAttr(url)}" target="_blank" rel="noopener">
+            <span class="post-author">${escapeHtml(record.author.displayName || record.author.handle)}</span>
+            @${escapeHtml(record.author.handle)}
+          </a>
+        </div>
+        <div class="post-text">${renderPostText(record.value.text ?? "", record.value.facets ?? [])}</div>
+        ${(record.embeds ?? []).map((nested: any) => renderPostEmbed(nested)).join("")}
+        <a href="${escapeAttr(url)}" target="_blank" rel="noopener">View quoted post on Bluesky</a>
+      </div>
+    `;
   }
 
   return "";
@@ -4184,7 +4213,7 @@ function renderDiscussionLoader(discussionPath: string): string {
   `;
 }
 
-function renderDiscussion(data: DiscussionRenderData): string {
+export function renderDiscussion(data: DiscussionRenderData): string {
   const visibleThread = data.thread.filter(
     post => post.uri !== data.anchorPost.uri,
   );
@@ -4197,10 +4226,13 @@ function renderDiscussion(data: DiscussionRenderData): string {
 </h2>
 
 
-${
-  visibleThread.length === 0
-    ? '<div class="reply-box">' + blueskyReplyLink(data.anchorPost.blueskyUrl,"Start the discussion on Bluesky") + '</div>'
-    : visibleThread.map(post => `
+<div class="reply-box">
+  ${blueskyReplyLink(data.anchorPost.blueskyUrl, visibleThread.length === 0
+    ? "Start the discussion on Bluesky"
+    : "Start a new discussion on Bluesky")}
+</div>
+
+${visibleThread.map(post => `
   <article class="post${post.imported ? " imported-post" : ""}">
   <div class="post-row">
     <div class="thread-margin">

@@ -1,0 +1,50 @@
+{
+  "record": {
+    "uri": "at://did:plc:keidev57bzqqh5rjkxam3sci/app.bsky.feed.post/3mw3t5sb4cw2j",
+    "cid": "bafyreibi2olkcr3o3dv63dnvomin5nixmzd6d7frwdglo5at5tcxgfivza",
+    "author": {
+      "did": "did:plc:keidev57bzqqh5rjkxam3sci",
+      "handle": "pubchat.org",
+      "displayName": "PubChat",
+      "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:keidev57bzqqh5rjkxam3sci/bafkreifxivlypmskwydfixtw5hzbauujdi22flkdmxvzqy6jeiqs2rcq4q",
+      "associated": {
+        "activitySubscription": {
+          "allowSubscriptions": "followers"
+        }
+      },
+      "labels": [],
+      "createdAt": "2026-05-01T14:19:34.862Z"
+    },
+    "value": {
+      "$type": "app.bsky.feed.post",
+      "createdAt": "2026-09-22T08:37:39.253Z",
+      "embed": {
+        "$type": "app.bsky.embed.external",
+        "external": {
+          "description": "by Ioannis Anagnostides, Weiqiang Zheng\n\nA (coarse) correlated equilibrium (CE) is information-value-free (IVF) if a player can match the payoff obtained from recommendations by committing to a fixed action. Motivated by the problem of regulating algorithmic collusion, this refi…",
+          "title": "Algorithmic Collusion and the Complexity of Information-Value-Free Equilibria",
+          "uri": "https://pubchat.org/chat/arxiv/2609.22757"
+        }
+      },
+      "text": "“Algorithmic Collusion and the Complexity of Information-Value-Free Equilibria” (2026)\nby Ioannis Anagnostides, Weiqiang Zheng\n\nCC: PubChat"
+    },
+    "labels": [],
+    "likeCount": 1,
+    "replyCount": 0,
+    "repostCount": 0,
+    "quoteCount": 1,
+    "indexedAt": "2026-09-22T08:37:39.466Z",
+    "embeds": [
+      {
+        "external": {
+          "uri": "https://pubchat.org/chat/arxiv/2609.22757",
+          "title": "Algorithmic Collusion and the Complexity of Information-Value-Free Equilibria",
+          "description": "by Ioannis Anagnostides, Weiqiang Zheng\n\nA (coarse) correlated equilibrium (CE) is information-value-free (IVF) if a player can match the payoff obtained from recommendations by committing to a fixed action. Motivated by the problem of regulating algorithmic collusion, this refi…"
+        },
+        "$type": "app.bsky.embed.external#view"
+      }
+    ],
+    "$type": "app.bsky.embed.record#viewRecord"
+  },
+  "$type": "app.bsky.embed.record#view"
+}
